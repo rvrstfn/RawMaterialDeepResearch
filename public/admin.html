@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex Admin</title>
+  <style>
+    :root { --bg:#fff; --fg:#111; --muted:#666; --line:#ddd; --btn:#111; --btnfg:#fff; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+    main { max-width: 860px; margin: 0 auto; padding: 16px; display:grid; gap:12px; }
+    h1 { margin:0; font-size:16px; }
+    .top { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .row { display:grid; gap:8px; grid-template-columns: 1fr auto auto; }
+    @media (max-width: 760px) { .row { grid-template-columns: 1fr; } }
+    label { display:grid; gap:4px; color:var(--muted); font-size:12px; }
+    select, textarea, button { font:inherit; color:var(--fg); border:1px solid var(--line); border-radius:6px; background:#fff; }
+    select, textarea { padding:8px; }
+    textarea { min-height: 130px; resize: vertical; }
+    button { padding:8px 10px; cursor:pointer; background:var(--btn); color:var(--btnfg); border-color:var(--btn); }
+    .status { min-height:18px; color:var(--muted); font-size:12px; }
+    .version { color:var(--muted); font-size:11px; line-height:1.3; min-height:14px; }
+    a { color: var(--fg); }
+    table { width:100%; border-collapse: collapse; }
+    th, td { border:1px solid var(--line); padding:6px; font-size:12px; text-align:left; vertical-align: middle; }
+    td input { width: 100%; min-width: 160px; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="top">
+      <h1>Admin Settings</h1>
+      <div class="row" style="display:flex; gap:6px; grid-template-columns:none;">
+        <div style="display:grid; gap:2px;">
+          <div class="status" id="whoami"></div>
+          <div class="version" id="version"></div>
+        </div>
+        <button id="logout" type="button">Logout</button>
+      </div>
+    </div>
+    <div><a href="/">Back to Chat</a> · <a href="/test">Open Test UI</a></div>
+
+    <div class="row">
+      <label>
+        Default Model
+        <select id="model"></select>
+      </label>
+      <button id="reloadModels" type="button">Reload Models</button>
+      <button id="loadCurrent" type="button">Load Current</button>
+    </div>
+
+    <label>
+      Default Thread Preamble
+      <textarea id="preamble" placeholder="This preamble is auto-applied once for each new thread."></textarea>
+    </label>
+
+    <div class="row" style="grid-template-columns:auto auto 1fr;">
+      <button id="save" type="button">Save Settings</button>
+      <button id="reset" type="button">Reset Form</button>
+      <div class="status" id="status"></div>
+    </div>
+
+    <h1>Create User</h1>
+    <div class="row" style="grid-template-columns:1fr 1fr auto auto;">
+      <label>
+        Username
+        <input id="newUsername" type="text" placeholder="new user">
+      </label>
+      <label>
+        Password
+        <input id="newPassword" type="password" placeholder="min 8 chars">
+      </label>
+      <label>
+        Role
+        <select id="newRole">
+          <option value="user" selected>user</option>
+          <option value="admin">admin</option>
+        </select>
+      </label>
+      <button id="createUser" type="button" style="align-self:end;">Create User</button>
+    </div>
+    <div class="status" id="userStatus"></div>
+
+    <h1>Users</h1>
+    <div class="row" style="grid-template-columns:auto 1fr;">
+      <button id="reloadUsers" type="button">Reload Users</button>
+      <div class="status" id="usersStatus"></div>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Username</th>
+          <th>Role</th>
+          <th>Created</th>
+          <th>New Password</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody id="usersBody"></tbody>
+    </table>
+  </main>
+
+  <script>
+    const el = {
+      model: document.getElementById("model"),
+      reloadModels: document.getElementById("reloadModels"),
+      loadCurrent: document.getElementById("loadCurrent"),
+      preamble: document.getElementById("preamble"),
+      save: document.getElementById("save"),
+      reset: document.getElementById("reset"),
+      status: document.getElementById("status"),
+      whoami: document.getElementById("whoami"),
+      version: document.getElementById("version"),
+      logout: document.getElementById("logout"),
+      newUsername: document.getElementById("newUsername"),
+      newPassword: document.getElementById("newPassword"),
+      newRole: document.getElementById("newRole"),
+      createUser: document.getElementById("createUser"),
+      userStatus: document.getElementById("userStatus"),
+      reloadUsers: document.getElementById("reloadUsers"),
+      usersStatus: document.getElementById("usersStatus"),
+      usersBody: document.getElementById("usersBody")
+    };
+
+    let loadedSettings = { defaultModel: "", defaultThreadPreamble: "" };
+
+    function setStatus(text) {
+      el.status.textContent = text || "";
+    }
+    function setUserStatus(text) {
+      el.userStatus.textContent = text || "";
+    }
+    function setUsersStatus(text) {
+      el.usersStatus.textContent = text || "";
+    }
+
+    function setModels(items, selected) {
+      el.model.innerHTML = "";
+      const models = Array.isArray(items) ? items : [];
+      for (const m of models) {
+        const id = (m && (m.id || m.model)) || "";
+        if (!id) continue;
+        const opt = document.createElement("option");
+        opt.value = id;
+        opt.textContent = id;
+        el.model.appendChild(opt);
+      }
+      if (!el.model.options.length) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "(no models)";
+        el.model.appendChild(opt);
+      }
+      if (selected) el.model.value = selected;
+      if (!el.model.value && el.model.options.length) el.model.selectedIndex = 0;
+    }
+
+    async function loadModels() {
+      const res = await fetch("/api/models");
+      if (res.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load models");
+      setModels(data.data || [], loadedSettings.defaultModel);
+    }
+
+    async function loadSettings() {
+      const res = await fetch("/api/admin/settings");
+      if (res.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load settings");
+      loadedSettings = {
+        defaultModel: typeof data.defaultModel === "string" ? data.defaultModel : "",
+        defaultThreadPreamble: typeof data.defaultThreadPreamble === "string" ? data.defaultThreadPreamble : ""
+      };
+      if (loadedSettings.defaultModel) el.model.value = loadedSettings.defaultModel;
+      el.preamble.value = loadedSettings.defaultThreadPreamble;
+    }
+
+    async function refreshAll() {
+      setStatus("Loading...");
+      try {
+        await loadSettings();
+        await loadModels();
+        setStatus("Loaded");
+      } catch (err) {
+        setStatus(err.message || String(err));
+      }
+    }
+
+    async function saveSettings() {
+      setStatus("Saving...");
+      try {
+        const res = await fetch("/api/admin/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            defaultModel: el.model.value.trim(),
+            defaultThreadPreamble: el.preamble.value
+          })
+        });
+        if (res.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Failed to save settings");
+        loadedSettings = data;
+        setStatus("Saved");
+      } catch (err) {
+        setStatus(err.message || String(err));
+      }
+    }
+
+    function resetForm() {
+      el.model.value = loadedSettings.defaultModel || el.model.value;
+      el.preamble.value = loadedSettings.defaultThreadPreamble || "";
+      setStatus("Reset");
+    }
+
+    async function loadMe() {
+      const res = await fetch("/api/auth/me");
+      if (!res.ok) {
+        window.location.href = "/login";
+        return;
+      }
+      const data = await res.json();
+      const user = data && data.user ? data.user : null;
+      if (!user) {
+        window.location.href = "/login";
+        return;
+      }
+      el.whoami.textContent = `${user.username} (${user.role})`;
+    }
+
+    async function loadVersion() {
+      try {
+        const res = await fetch("/api/version", { cache: "no-store" });
+        if (!res.ok) return;
+        const v = await res.json().catch(() => null);
+        if (!v) return;
+        const version = typeof v.version === "string" ? v.version : "";
+        const sha = v.git && typeof v.git.sha === "string" ? v.git.sha : "";
+        const dirty = v.git && v.git.dirty ? "*" : "";
+        const build = v.build && typeof v.build.id === "string" ? v.build.id : "";
+        const startedAt = typeof v.startedAt === "string" ? v.startedAt : "";
+        el.version.textContent = [
+          version && `v${version}`,
+          (sha ? `${sha}${dirty}` : (build ? `build ${build}` : "")),
+          startedAt && `started ${startedAt}`,
+        ].filter(Boolean).join(" · ");
+      } catch {
+        // ignore
+      }
+    }
+
+    async function logout() {
+      try {
+        await fetch("/api/auth/logout", { method: "POST" });
+      } finally {
+        window.location.href = "/login";
+      }
+    }
+
+    async function createUser() {
+      const username = el.newUsername.value.trim();
+      const password = el.newPassword.value;
+      const role = el.newRole.value === "admin" ? "admin" : "user";
+      if (!username || !password) {
+        setUserStatus("Username and password are required");
+        return;
+      }
+      setUserStatus("Creating...");
+      el.createUser.disabled = true;
+      try {
+        const res = await fetch("/api/admin/users", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password, role })
+        });
+        if (res.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || "Failed to create user");
+        el.newUsername.value = "";
+        el.newPassword.value = "";
+        el.newRole.value = "user";
+        setUserStatus(`User created: ${data.user.username} (${data.user.role})`);
+        await loadUsers();
+      } catch (err) {
+        setUserStatus(err.message || String(err));
+      } finally {
+        el.createUser.disabled = false;
+      }
+    }
+
+    async function loadUsers() {
+      setUsersStatus("Loading...");
+      try {
+        const res = await fetch("/api/admin/users");
+        if (res.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || "Failed to load users");
+        const items = Array.isArray(data.data) ? data.data : [];
+        el.usersBody.innerHTML = "";
+        if (!items.length) {
+          const tr = document.createElement("tr");
+          const td = document.createElement("td");
+          td.colSpan = 6;
+          td.textContent = "No users";
+          tr.appendChild(td);
+          el.usersBody.appendChild(tr);
+          setUsersStatus("No users");
+          return;
+        }
+        for (const u of items) {
+          const tr = document.createElement("tr");
+          const createdAt = typeof u.created_at === "string" ? new Date(u.created_at).toLocaleString() : "";
+          tr.innerHTML = `
+            <td>${u.id}</td>
+            <td>${u.username}</td>
+            <td>${u.role}</td>
+            <td>${createdAt}</td>
+            <td><input type="password" data-user-id="${u.id}" placeholder="new password"></td>
+            <td><button type="button" data-reset-id="${u.id}">Reset Password</button></td>
+          `;
+          el.usersBody.appendChild(tr);
+        }
+        setUsersStatus("Loaded");
+      } catch (err) {
+        setUsersStatus(err.message || String(err));
+      }
+    }
+
+    async function resetPassword(userId) {
+      const input = el.usersBody.querySelector(`input[data-user-id="${userId}"]`);
+      if (!input) return;
+      const password = input.value || "";
+      if (!password) {
+        setUsersStatus("Enter a new password first");
+        return;
+      }
+      setUsersStatus(`Updating password for user ${userId}...`);
+      try {
+        const res = await fetch("/api/admin/users/password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId, password })
+        });
+        if (res.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || "Failed to update password");
+        input.value = "";
+        setUsersStatus(`Password updated for ${data.user.username}`);
+      } catch (err) {
+        setUsersStatus(err.message || String(err));
+      }
+    }
+
+    function init() {
+      loadMe();
+      loadVersion();
+      el.reloadModels.addEventListener("click", async () => {
+        setStatus("Loading models...");
+        try {
+          await loadModels();
+          setStatus("Models loaded");
+        } catch (err) {
+          setStatus(err.message || String(err));
+        }
+      });
+      el.loadCurrent.addEventListener("click", refreshAll);
+      el.save.addEventListener("click", saveSettings);
+      el.reset.addEventListener("click", resetForm);
+      el.logout.addEventListener("click", logout);
+      el.createUser.addEventListener("click", createUser);
+      el.reloadUsers.addEventListener("click", loadUsers);
+      el.usersBody.addEventListener("click", (event) => {
+        const btn = event.target && event.target.closest("button[data-reset-id]");
+        if (!btn) return;
+        const userId = Number(btn.getAttribute("data-reset-id"));
+        if (!userId) return;
+        resetPassword(userId);
+      });
+      refreshAll();
+      loadUsers();
+    }
+
+    init();
+  </script>
+</body>
+</html>

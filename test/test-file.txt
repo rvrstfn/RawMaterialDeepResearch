@@ -1,0 +1,2 @@
+This is a test file for CodexGUI shared test folder access.
+Created: 2026-02-10

@@ -1,0 +1,874 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex Chat</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --fg: #111111;
+      --muted: #666666;
+      --line: #dddddd;
+      --panel: #fafafa;
+      --btn: #111111;
+      --btnfg: #ffffff;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    .layout {
+      height: 100%;
+      display: grid;
+      grid-template-columns: 300px 1fr;
+    }
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; grid-template-rows: 220px 1fr; }
+    }
+    .sidebar {
+      border-right: 1px solid var(--line);
+      padding: 12px;
+      display: grid;
+      gap: 10px;
+      overflow: hidden;
+    }
+    .main {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      min-height: 0;
+    }
+    .header {
+      border-bottom: 1px solid var(--line);
+      padding: 10px 14px;
+      display: grid;
+      gap: 3px;
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .title {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .meta {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .messages {
+      min-height: 0;
+      overflow: auto;
+      padding: 8px 14px;
+      background: #fff;
+    }
+	    .msg {
+	      border-bottom: 1px solid var(--line);
+	      padding: 10px 0;
+	      white-space: normal;
+	      overflow-wrap: anywhere;
+	    }
+	    .msg-text {
+	      white-space: normal;
+	      overflow-wrap: anywhere;
+	    }
+	    .msg-text strong {
+	      font-weight: 650;
+	    }
+	    .msg-text em {
+	      font-style: italic;
+	    }
+	    .msg-text h1, .msg-text h2, .msg-text h3, .msg-text h4, .msg-text h5, .msg-text h6 {
+	      margin: 10px 0 6px 0;
+	      line-height: 1.25;
+	    }
+	    .msg-text h1 { font-size: 18px; }
+	    .msg-text h2 { font-size: 16px; }
+	    .msg-text h3 { font-size: 15px; }
+	    .msg-text h4 { font-size: 14px; }
+	    .msg-text h5 { font-size: 13px; }
+	    .msg-text h6 { font-size: 12px; }
+	    .msg-text p {
+	      margin: 6px 0;
+	    }
+	    .msg-text ul {
+	      margin: 6px 0 6px 18px;
+	      padding: 0;
+	    }
+	    .msg-text li {
+	      margin: 2px 0;
+	    }
+	    .msg-text code.md-inline {
+	      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+	      font-size: 0.95em;
+	      background: #f3f3f3;
+	      border: 1px solid #e3e3e3;
+	      border-radius: 4px;
+	      padding: 0 4px;
+	    }
+	    .msg-text pre.md-code {
+	      margin: 8px 0 0 0;
+	      padding: 10px 12px;
+	      background: #f6f6f6;
+	      border: 1px solid #e6e6e6;
+	      border-radius: 8px;
+	      overflow: auto;
+	      white-space: pre;
+	    }
+	    .msg-text pre.md-code code {
+	      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+	      font-size: 12px;
+	    }
+	    .msg-role {
+	      color: var(--muted);
+	      font-size: 11px;
+	      text-transform: uppercase;
+	      letter-spacing: 0.04em;
+	      margin-bottom: 4px;
+	    }
+	    .msg.temp .msg-role {
+	      font-style: italic;
+	    }
+	    .msg.temp {
+	      background: #fcfcfc;
+	    }
+	    .msg.temp .msg-text {
+	      color: #666666;
+	    }
+    .composer {
+      border-top: 1px solid var(--line);
+      padding: 10px 14px;
+      display: grid;
+      gap: 8px;
+      background: var(--panel);
+    }
+    .row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    textarea, select, button {
+      font: inherit;
+      color: var(--fg);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+    }
+    textarea {
+      width: 100%;
+      resize: vertical;
+      min-height: 70px;
+      padding: 8px;
+    }
+    select {
+      width: 100%;
+      min-height: 140px;
+      padding: 6px;
+    }
+    button {
+      padding: 8px 10px;
+      cursor: pointer;
+      background: var(--btn);
+      border-color: var(--btn);
+      color: var(--btnfg);
+    }
+    button[disabled] { opacity: 0.6; cursor: default; }
+    .status {
+      color: var(--muted);
+      font-size: 12px;
+      min-height: 16px;
+    }
+    .version {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.3;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="row">
+        <button id="newChat" type="button">New Chat</button>
+        <button id="refreshChats" type="button">Refresh</button>
+      </div>
+      <select id="conversations" size="16"></select>
+      <div class="status" id="leftStatus"></div>
+      <div class="version" id="versionInfo"></div>
+    </aside>
+
+    <main class="main">
+      <header class="header">
+        <div class="topbar">
+          <h1 class="title">Chat</h1>
+          <div class="row" style="gap:6px;">
+            <div class="status" id="whoami"></div>
+            <button id="logout" type="button">Logout</button>
+          </div>
+        </div>
+        <div class="meta" id="threadMeta">No conversation selected</div>
+      </header>
+
+      <section class="messages" id="messages"></section>
+
+      <section class="composer">
+        <textarea id="input" placeholder="Type a message. Enter to send, Shift+Enter for newline."></textarea>
+        <div class="row">
+          <button id="send" type="button">Send</button>
+          <button id="stop" type="button" disabled>Stop</button>
+          <div class="status" id="status"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const el = {
+      newChat: document.getElementById("newChat"),
+      refreshChats: document.getElementById("refreshChats"),
+      conversations: document.getElementById("conversations"),
+      leftStatus: document.getElementById("leftStatus"),
+      versionInfo: document.getElementById("versionInfo"),
+      threadMeta: document.getElementById("threadMeta"),
+      messages: document.getElementById("messages"),
+      input: document.getElementById("input"),
+      send: document.getElementById("send"),
+      stop: document.getElementById("stop"),
+      status: document.getElementById("status"),
+      whoami: document.getElementById("whoami"),
+      logout: document.getElementById("logout")
+    };
+
+    let busy = false;
+    let stopping = false;
+    let currentThreadId = "";
+	    let activeTurnId = "";
+	    let currentConversationDir = "";
+	    let messageList = [];
+
+	    function escapeHtml(s) {
+	      return String(s).replace(/[&<>"']/g, (ch) => {
+	        switch (ch) {
+	          case "&": return "&amp;";
+	          case "<": return "&lt;";
+	          case ">": return "&gt;";
+	          case "\"": return "&quot;";
+	          case "'": return "&#39;";
+	          default: return ch;
+	        }
+	      });
+	    }
+
+	    function renderInlineLiteMarkdown(text) {
+	      const src = String(text || "");
+	      const parts = src.split("`");
+	      let out = "";
+	      for (let i = 0; i < parts.length; i++) {
+	        const seg = parts[i] || "";
+	        const isCode = (i % 2) === 1;
+	        if (isCode) {
+	          out += `<code class="md-inline">${escapeHtml(seg)}</code>`;
+	          continue;
+	        }
+	        // Bold first, then italics, only on escaped text.
+	        let escaped = escapeHtml(seg);
+	        escaped = escaped.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+	        escaped = escaped.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
+	        out += escaped;
+	      }
+	      return out;
+	    }
+
+	    function renderTextLinesLiteMarkdown(text) {
+	      const lines = String(text || "").split(/\r?\n/);
+	      let html = "";
+	      let i = 0;
+
+	      const consumeParagraph = () => {
+	        const buf = [];
+	        while (i < lines.length) {
+	          const line = lines[i];
+	          if (!line.trim()) break;
+	          if (/^#{1,6}\s+/.test(line)) break;
+	          if (/^\s*-\s+/.test(line)) break;
+	          buf.push(line);
+	          i++;
+	        }
+	        if (!buf.length) return;
+	        html += `<p>${buf.map(renderInlineLiteMarkdown).join("<br>")}</p>`;
+	      };
+
+	      while (i < lines.length) {
+	        const line = lines[i] || "";
+	        const trimmed = line.trim();
+	        if (!trimmed) {
+	          i++;
+	          continue;
+	        }
+
+	        const hm = line.match(/^(#{1,6})\s+(.+)$/);
+	        if (hm) {
+	          const level = Math.min(6, Math.max(1, hm[1].length));
+	          const content = hm[2];
+	          html += `<h${level}>${renderInlineLiteMarkdown(content)}</h${level}>`;
+	          i++;
+	          continue;
+	        }
+
+	        if (/^\s*-\s+/.test(line)) {
+	          html += "<ul>";
+	          while (i < lines.length && /^\s*-\s+/.test(lines[i] || "")) {
+	            const liText = (lines[i] || "").replace(/^\s*-\s+/, "");
+	            html += `<li>${renderInlineLiteMarkdown(liText)}</li>`;
+	            i++;
+	          }
+	          html += "</ul>";
+	          continue;
+	        }
+
+	        consumeParagraph();
+	      }
+
+	      return html;
+	    }
+
+	    // "Lite" Markdown renderer (safe, tiny):
+	    // - code fences: ``` ... ``` -> <pre><code>...</code></pre>
+	    // - inline code: `...` -> <code>
+	    // - bold: **...** -> <strong>
+	    // - italics: *...* -> <em>
+	    // - headings: # ... -> <h1> ... (up to h6)
+	    // - bullet lists: - ... -> <ul><li>...</li></ul>
+	    // - newlines -> <br>
+	    // Everything else is escaped to avoid XSS.
+	    function renderLiteMarkdown(text) {
+	      const src = String(text || "");
+	      const fenceParts = src.split("```");
+	      let html = "";
+	      for (let i = 0; i < fenceParts.length; i++) {
+	        const part = fenceParts[i] || "";
+	        const isCodeFence = (i % 2) === 1;
+	        if (isCodeFence) {
+	          // Drop a leading language hint line like "js\n".
+	          let code = part;
+	          const m = code.match(/^\s*([a-zA-Z0-9_+-]+)\r?\n/);
+	          if (m) code = code.slice(m[0].length);
+	          html += `<pre class="md-code"><code>${escapeHtml(code)}</code></pre>`;
+	          continue;
+	        }
+	        html += renderTextLinesLiteMarkdown(part);
+	      }
+	      return html;
+	    }
+
+	    function refreshControlState() {
+	      el.send.disabled = busy;
+	      el.stop.disabled = !(busy && currentThreadId && activeTurnId) || stopping;
+	      el.newChat.disabled = busy;
+	      el.refreshChats.disabled = busy;
+      el.conversations.disabled = busy;
+    }
+
+    function setBusy(next) {
+      busy = next;
+      refreshControlState();
+    }
+
+    function setStatus(text) {
+      el.status.textContent = text || "";
+    }
+
+    async function loadVersion() {
+      try {
+        const res = await fetch("/api/version", { cache: "no-store" });
+        if (!res.ok) return;
+        const v = await res.json().catch(() => null);
+        if (!v) return;
+        const version = typeof v.version === "string" ? v.version : "";
+        const sha = v.git && typeof v.git.sha === "string" ? v.git.sha : "";
+        const dirty = v.git && v.git.dirty ? "*" : "";
+        const build = v.build && typeof v.build.id === "string" ? v.build.id : "";
+        const startedAt = typeof v.startedAt === "string" ? v.startedAt : "";
+        el.versionInfo.textContent = [
+          version && `v${version}`,
+          (sha ? `${sha}${dirty}` : (build ? `build ${build}` : "")),
+          startedAt && `started ${startedAt}`,
+        ].filter(Boolean).join(" · ");
+      } catch {
+        // ignore
+      }
+    }
+
+    function setLeftStatus(text) {
+      el.leftStatus.textContent = text || "";
+    }
+
+    function formatTimestamp(value) {
+      if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return "";
+      const ms = value > 1e12 ? value : value * 1000;
+      const d = new Date(ms);
+      if (Number.isNaN(d.getTime())) return "";
+      return d.toLocaleString();
+    }
+
+    function refreshThreadMeta() {
+      if (!currentThreadId) {
+        el.threadMeta.textContent = "No conversation selected";
+        return;
+      }
+      const pathPart = currentConversationDir ? ` | ${currentConversationDir}` : "";
+      el.threadMeta.textContent = `${currentThreadId}${pathPart}`;
+    }
+
+    function renderMessages() {
+      el.messages.innerHTML = "";
+      for (const msg of messageList) {
+        const row = document.createElement("div");
+        row.className = msg.temp ? "msg temp" : "msg";
+
+        const role = document.createElement("div");
+        role.className = "msg-role";
+        let roleLabel = msg.role === "user" ? "User" : "Assistant";
+        if (
+          msg.role === "assistant" &&
+          !msg.temp &&
+          typeof msg.turnsUsed === "number" &&
+          Number.isFinite(msg.turnsUsed) &&
+          typeof msg.maxTurns === "number" &&
+          Number.isFinite(msg.maxTurns)
+        ) {
+          roleLabel = `${roleLabel} [${msg.turnsUsed}/${msg.maxTurns}]`;
+        }
+        role.textContent = roleLabel;
+
+        const text = document.createElement("div");
+        text.className = "msg-text";
+        text.innerHTML = renderLiteMarkdown(msg.text || "");
+
+	        row.appendChild(role);
+	        row.appendChild(text);
+	        el.messages.appendChild(row);
+	      }
+      el.messages.scrollTop = el.messages.scrollHeight;
+    }
+
+    function appendMessage(role, text, temp = false, extra = null) {
+      const msg = {
+        id: `${Date.now()}_${Math.random().toString(16).slice(2)}`,
+        role,
+        text: text || "",
+        temp
+      };
+      if (extra && typeof extra === "object") Object.assign(msg, extra);
+      messageList.push(msg);
+      renderMessages();
+      return msg.id;
+    }
+
+    function updateMessageText(id, text) {
+      const msg = messageList.find((m) => m.id === id);
+      if (!msg) return;
+      msg.text = text || "";
+      renderMessages();
+    }
+
+    function updateMessageMeta(id, extra) {
+      const msg = messageList.find((m) => m.id === id);
+      if (!msg) return;
+      if (extra && typeof extra === "object") Object.assign(msg, extra);
+      renderMessages();
+    }
+
+    function removeMessage(id) {
+      const before = messageList.length;
+      messageList = messageList.filter((m) => m.id !== id);
+      if (messageList.length !== before) renderMessages();
+    }
+
+    async function loadConversations() {
+      setLeftStatus("Loading...");
+      try {
+        const res = await fetch("/api/conversations");
+        if (res.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Failed to load conversations");
+
+        const items = Array.isArray(data.data) ? data.data : [];
+        const prev = el.conversations.value;
+        el.conversations.innerHTML = "";
+
+        if (!items.length) {
+          const opt = document.createElement("option");
+          opt.value = "";
+          opt.textContent = "(no conversations yet)";
+          el.conversations.appendChild(opt);
+          setLeftStatus("No conversations");
+          return;
+        }
+
+        for (const c of items) {
+          if (!c || typeof c.id !== "string" || !c.id) continue;
+          const ts = formatTimestamp(typeof c.updatedAt === "number" ? c.updatedAt : c.createdAt);
+          const preview = typeof c.preview === "string" && c.preview.trim()
+            ? c.preview.trim().replace(/\s+/g, " ").slice(0, 56)
+            : "(no preview)";
+          const opt = document.createElement("option");
+          opt.value = c.id;
+          opt.textContent = `${ts || "(unknown time)"} | ${preview}`;
+          opt.dataset.dir = typeof c.conversationDir === "string" ? c.conversationDir : "";
+          el.conversations.appendChild(opt);
+        }
+
+        if (prev) el.conversations.value = prev;
+        if (!el.conversations.value && currentThreadId) el.conversations.value = currentThreadId;
+        setLeftStatus("Loaded");
+      } catch (err) {
+        setLeftStatus(err.message || String(err));
+      }
+    }
+
+    async function loadThreadMessages(threadId) {
+      if (!threadId) return;
+      setStatus("Loading conversation...");
+      setBusy(true);
+      try {
+        const res = await fetch(`/api/thread/messages?threadId=${encodeURIComponent(threadId)}`);
+        if (res.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Failed to load messages");
+
+        currentThreadId = threadId;
+        currentConversationDir = typeof data.conversationDir === "string" ? data.conversationDir : "";
+        const msgs = Array.isArray(data.messages) ? data.messages : [];
+        messageList = msgs
+          .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.text === "string")
+          .map((m) => ({ ...m, id: `${Date.now()}_${Math.random().toString(16).slice(2)}`, temp: false }));
+
+        renderMessages();
+        refreshThreadMeta();
+        setStatus("Ready");
+      } catch (err) {
+        setStatus(err.message || String(err));
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function sendMessage() {
+      const text = el.input.value.trim();
+      if (!text || busy) return;
+
+      appendMessage("user", text, false);
+      el.input.value = "";
+      setStatus("Sending...");
+      setBusy(true);
+      stopping = false;
+      activeTurnId = "";
+      refreshControlState();
+
+      let reasoningMsgId = "";
+      let reasoningText = "";
+      let assistantMsgId = "";
+      let assistantText = "";
+
+      try {
+        const res = await fetch("/api/turn/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            threadId: currentThreadId,
+            text
+          })
+        });
+
+        if (res.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || "Request failed");
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let done = false;
+
+        while (!done) {
+          const { value, done: streamDone } = await reader.read();
+          if (streamDone) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          let splitIndex;
+          while ((splitIndex = buffer.indexOf("\n\n")) >= 0) {
+            const raw = buffer.slice(0, splitIndex);
+            buffer = buffer.slice(splitIndex + 2);
+
+            for (const line of raw.split("\n")) {
+              if (!line.startsWith("data: ")) continue;
+              const data = line.slice(6);
+              if (data === "[DONE]") {
+                done = true;
+                break;
+              }
+
+              let msg;
+              try {
+                msg = JSON.parse(data);
+              } catch {
+                continue;
+              }
+
+              if (msg.type === "meta") {
+                if (msg.threadId) currentThreadId = msg.threadId;
+                if (msg.turnId) activeTurnId = msg.turnId;
+                if (typeof msg.conversationDir === "string") currentConversationDir = msg.conversationDir;
+                refreshThreadMeta();
+                refreshControlState();
+                continue;
+              }
+
+              if (msg.type === "event") {
+                const method = msg.method || "";
+                // Boundary-based "intermediate thought" rendering:
+                // - Buffer fine-grained deltas (summaryTextDelta)
+                // - Only update the temporary assistant message when we hit a boundary (summaryPartAdded)
+                //   or when the backend provides a whole part `text` at once.
+                if (!window.__reasoningSummaryState) {
+                  window.__reasoningSummaryState = { buffer: "", lastSummaryIndex: null };
+                }
+                const rs = window.__reasoningSummaryState;
+
+                if (method === "item/reasoning/summaryPartAdded") {
+                  const p = msg.params || {};
+                  const phase = typeof p.phase === "string" ? p.phase : "";
+                  const partText = typeof p.text === "string" ? p.text : "";
+                  const summaryIndex = typeof p.summaryIndex === "number" ? p.summaryIndex : null;
+
+                  if (summaryIndex !== null && summaryIndex !== rs.lastSummaryIndex) {
+                    rs.lastSummaryIndex = summaryIndex;
+                    rs.buffer = "";
+                  }
+
+                  // If the backend provides a whole chunk, render it immediately (replace).
+                  if (partText) {
+                    reasoningText = partText;
+                    rs.buffer = "";
+                    if (!assistantText) {
+                      if (!reasoningMsgId) reasoningMsgId = appendMessage("assistant", "", true);
+                      updateMessageText(reasoningMsgId, reasoningText);
+                    }
+                    continue;
+                  }
+
+                  // Otherwise, flush buffered deltas only on boundary completion.
+                  if (phase === "done" && rs.buffer) {
+                    reasoningText = rs.buffer;
+                    rs.buffer = "";
+                    if (!assistantText) {
+                      if (!reasoningMsgId) reasoningMsgId = appendMessage("assistant", "", true);
+                      updateMessageText(reasoningMsgId, reasoningText);
+                    }
+                  } else if (!assistantText && !reasoningMsgId) {
+                    // Ensure the placeholder exists even before the first flush.
+                    reasoningMsgId = appendMessage("assistant", "", true);
+                  }
+                  continue;
+                }
+
+                if (method === "item/reasoning/summaryTextDelta") {
+                  const p = msg.params || {};
+                  const delta = typeof p.delta === "string"
+                    ? p.delta
+                    : (typeof p.textDelta === "string" ? p.textDelta : "");
+                  const summaryIndex = typeof p.summaryIndex === "number" ? p.summaryIndex : null;
+
+                  if (summaryIndex !== null && summaryIndex !== rs.lastSummaryIndex) {
+                    rs.lastSummaryIndex = summaryIndex;
+                    rs.buffer = "";
+                  }
+
+                  if (delta) rs.buffer += delta;
+                  // Intentionally no DOM update here (boundary-based).
+                  continue;
+                }
+                continue;
+              }
+
+              if (msg.type === "delta") {
+                const delta = typeof msg.delta === "string" ? msg.delta : "";
+                if (!delta) continue;
+
+                if (reasoningMsgId) {
+                  removeMessage(reasoningMsgId);
+                  reasoningMsgId = "";
+                  reasoningText = "";
+                }
+
+                assistantText += delta;
+                if (!assistantMsgId) assistantMsgId = appendMessage("assistant", "", false);
+                updateMessageText(assistantMsgId, assistantText);
+                continue;
+              }
+
+              if (msg.type === "done") {
+                if (typeof msg.threadId === "string" && msg.threadId) {
+                  currentThreadId = msg.threadId;
+                }
+                if (typeof msg.conversationDir === "string") currentConversationDir = msg.conversationDir;
+                refreshThreadMeta();
+
+                const finalText = typeof msg.text === "string" ? msg.text : assistantText;
+                const turnsUsed = typeof msg.turnsUsed === "number" ? msg.turnsUsed : null;
+                const maxTurns = typeof msg.maxTurns === "number" ? msg.maxTurns : null;
+                if (reasoningMsgId && finalText) {
+                  removeMessage(reasoningMsgId);
+                  reasoningMsgId = "";
+                }
+                if (finalText) {
+                  if (!assistantMsgId) assistantMsgId = appendMessage("assistant", finalText, false, { turnsUsed, maxTurns });
+                  else {
+                    updateMessageText(assistantMsgId, finalText);
+                    updateMessageMeta(assistantMsgId, { turnsUsed, maxTurns });
+                  }
+                }
+                setStatus(msg.status === "interrupted" ? "Interrupted" : "Done");
+                activeTurnId = "";
+                stopping = false;
+                refreshControlState();
+                continue;
+              }
+
+              if (msg.type === "error") {
+                throw new Error(msg.message || "Turn failed");
+              }
+            }
+          }
+        }
+
+        await loadConversations();
+        if (currentThreadId) el.conversations.value = currentThreadId;
+      } catch (err) {
+        if (reasoningMsgId && !assistantText) removeMessage(reasoningMsgId);
+        appendMessage("assistant", `Error: ${err.message || String(err)}`, false);
+        setStatus("Error");
+      } finally {
+        activeTurnId = "";
+        stopping = false;
+        setBusy(false);
+        refreshControlState();
+      }
+    }
+
+    async function stopAssistant() {
+      if (!busy || !currentThreadId || !activeTurnId || stopping) return;
+      stopping = true;
+      setStatus("Stopping...");
+      refreshControlState();
+      try {
+        const res = await fetch("/api/turn/interrupt", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            threadId: currentThreadId,
+            turnId: activeTurnId
+          })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        if (!res.ok) throw new Error(data.error || "Failed to stop");
+      } catch (err) {
+        stopping = false;
+        refreshControlState();
+        setStatus(`Stop failed: ${err.message || String(err)}`);
+      }
+    }
+
+    function startNewChat() {
+      currentThreadId = "";
+      currentConversationDir = "";
+      messageList = [];
+      renderMessages();
+      el.conversations.value = "";
+      refreshThreadMeta();
+      setStatus("New chat ready");
+    }
+
+    async function loadMe() {
+      try {
+        const res = await fetch("/api/auth/me");
+        if (!res.ok) {
+          window.location.href = "/login";
+          return;
+        }
+        const data = await res.json();
+        const user = data && data.user ? data.user : null;
+        if (!user) {
+          window.location.href = "/login";
+          return;
+        }
+        el.whoami.textContent = `${user.username} (${user.role})`;
+      } catch {
+        window.location.href = "/login";
+      }
+    }
+
+    async function logout() {
+      try {
+        await fetch("/api/auth/logout", { method: "POST" });
+      } finally {
+        window.location.href = "/login";
+      }
+    }
+
+    function init() {
+      el.send.addEventListener("click", sendMessage);
+      el.stop.addEventListener("click", stopAssistant);
+      el.logout.addEventListener("click", logout);
+      el.newChat.addEventListener("click", startNewChat);
+      el.refreshChats.addEventListener("click", loadConversations);
+      el.conversations.addEventListener("change", () => {
+        const threadId = el.conversations.value.trim();
+        if (threadId) loadThreadMessages(threadId);
+      });
+      el.input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          sendMessage();
+        }
+      });
+
+      loadMe();
+      loadVersion();
+      refreshThreadMeta();
+      refreshControlState();
+      loadConversations();
+    }
+
+    init();
+  </script>
+</body>
+</html>

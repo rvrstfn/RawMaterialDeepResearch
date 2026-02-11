@@ -1,0 +1,673 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex App Server GUI</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --fg: #111111;
+      --muted: #666666;
+      --line: #d9d9d9;
+      --btn: #111111;
+      --btnfg: #ffffff;
+      --panel: #fafafa;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font: 14px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    main {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+    }
+    .row {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: 1fr 1fr;
+    }
+    .row-3 {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: 1fr 1fr auto;
+    }
+    @media (max-width: 760px) {
+      .row, .row-3 { grid-template-columns: 1fr; }
+    }
+    label {
+      display: grid;
+      gap: 4px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    input, select, textarea, button {
+      font: inherit;
+      color: var(--fg);
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px;
+    }
+    button {
+      cursor: pointer;
+      background: var(--btn);
+      color: var(--btnfg);
+      border-color: var(--btn);
+    }
+    button[disabled] {
+      opacity: 0.6;
+      cursor: default;
+    }
+    .actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .inline {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    textarea {
+      min-height: 110px;
+      resize: vertical;
+    }
+    .status {
+      min-height: 18px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    pre {
+      margin: 0;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      min-height: 170px;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      overflow-wrap: anywhere;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Codex App Server GUI</h1>
+    <div class="status" id="version"></div>
+
+    <div class="row-3">
+      <label>
+        Model
+        <select id="model"></select>
+      </label>
+      <label>
+        Thread ID
+        <input id="threadId" type="text" placeholder="new thread if empty">
+      </label>
+      <div class="actions" style="align-self:end;">
+        <button id="loadModels" type="button">Load Models</button>
+        <button id="ensureThread" type="button">Ensure Thread</button>
+      </div>
+    </div>
+
+    <label>
+      Previous Threads
+      <select id="threadList" size="6"></select>
+    </label>
+
+    <div class="actions">
+      <button id="refreshThreads" type="button">Refresh Threads</button>
+      <button id="useThread" type="button">Use Selected Thread</button>
+      <label class="inline">
+        <input id="onlyGuiThreads" type="checkbox" checked>
+        Only this GUI's threads
+      </label>
+    </div>
+
+    <label>
+      Thread Preamble (applies once per thread)
+      <textarea id="preamble" placeholder="Optional instructions to inject once for this thread"></textarea>
+    </label>
+
+    <label>
+      Prompt
+      <textarea id="prompt" placeholder="Type your request"></textarea>
+    </label>
+
+    <div class="actions">
+      <label class="inline">
+        <input id="stream" type="checkbox" checked>
+        Stream
+      </label>
+      <button id="interrupt" type="button" disabled>Interrupt</button>
+      <button id="send" type="button">Send</button>
+      <button id="clear" type="button">Clear Output</button>
+    </div>
+
+    <div class="status" id="status"></div>
+
+    <label>
+      Assistant Output
+      <pre id="output"></pre>
+    </label>
+
+    <label>
+      Event Log
+      <pre id="events"></pre>
+    </label>
+  </main>
+
+  <script>
+    const el = {
+      model: document.getElementById("model"),
+      threadId: document.getElementById("threadId"),
+      preamble: document.getElementById("preamble"),
+      threadList: document.getElementById("threadList"),
+      onlyGuiThreads: document.getElementById("onlyGuiThreads"),
+      prompt: document.getElementById("prompt"),
+      stream: document.getElementById("stream"),
+      loadModels: document.getElementById("loadModels"),
+      refreshThreads: document.getElementById("refreshThreads"),
+      ensureThread: document.getElementById("ensureThread"),
+      useThread: document.getElementById("useThread"),
+      send: document.getElementById("send"),
+      interrupt: document.getElementById("interrupt"),
+      clear: document.getElementById("clear"),
+      status: document.getElementById("status"),
+      version: document.getElementById("version"),
+      output: document.getElementById("output"),
+      events: document.getElementById("events")
+    };
+
+    let busy = false;
+    let activeTurnId = "";
+    const PREAMBLE_STORE_KEY = "codex_gui_thread_preambles_v1";
+    const THREAD_IDS_STORE_KEY = "codex_gui_thread_ids_v1";
+
+    function readPreambleStore() {
+      try {
+        const raw = window.localStorage.getItem(PREAMBLE_STORE_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object") return {};
+        return parsed;
+      } catch {
+        return {};
+      }
+    }
+
+    function writePreambleStore(store) {
+      try {
+        window.localStorage.setItem(PREAMBLE_STORE_KEY, JSON.stringify(store || {}));
+      } catch {
+        // Ignore storage errors.
+      }
+    }
+
+    function readTrackedThreadIds() {
+      try {
+        const raw = window.localStorage.getItem(THREAD_IDS_STORE_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter((x) => typeof x === "string" && x.trim());
+      } catch {
+        return [];
+      }
+    }
+
+    function writeTrackedThreadIds(ids) {
+      try {
+        window.localStorage.setItem(THREAD_IDS_STORE_KEY, JSON.stringify(ids || []));
+      } catch {
+        // Ignore storage errors.
+      }
+    }
+
+    function trackThreadId(threadId) {
+      const id = (threadId || "").trim();
+      if (!id) return;
+      const ids = readTrackedThreadIds();
+      if (ids.includes(id)) return;
+      ids.push(id);
+      writeTrackedThreadIds(ids);
+    }
+
+    function saveCurrentPreambleForThread(threadId) {
+      const id = (threadId || "").trim();
+      if (!id) return;
+      const text = el.preamble.value || "";
+      const store = readPreambleStore();
+      if (text.trim()) {
+        store[id] = text;
+      } else {
+        delete store[id];
+      }
+      writePreambleStore(store);
+    }
+
+    function loadPreambleForThread(threadId) {
+      const id = (threadId || "").trim();
+      if (!id) return;
+      const store = readPreambleStore();
+      if (typeof store[id] === "string") {
+        el.preamble.value = store[id];
+      }
+    }
+
+    function setBusy(next) {
+      busy = next;
+      el.send.disabled = busy;
+      el.loadModels.disabled = busy;
+      el.refreshThreads.disabled = busy;
+      el.ensureThread.disabled = busy;
+      el.useThread.disabled = busy;
+      el.interrupt.disabled = !busy || !activeTurnId;
+    }
+
+    function setStatus(msg) {
+      el.status.textContent = msg || "";
+    }
+
+    function appendOutput(text) {
+      el.output.textContent += text;
+    }
+
+    function appendEvent(text) {
+      el.events.textContent += text + "\n";
+      el.events.scrollTop = el.events.scrollHeight;
+    }
+
+    function setModels(models) {
+      const prev = el.model.value;
+      el.model.innerHTML = "";
+
+      const list = Array.isArray(models) ? models : [];
+      for (const m of list) {
+        const id = (m && (m.id || m.model)) || "";
+        if (!id) continue;
+        const opt = document.createElement("option");
+        opt.value = id;
+        opt.textContent = id;
+        el.model.appendChild(opt);
+      }
+
+      if (!el.model.options.length) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "(no models)";
+        el.model.appendChild(opt);
+      }
+
+      if (prev) el.model.value = prev;
+      if (!el.model.value && el.model.options.length) el.model.selectedIndex = 0;
+    }
+
+    function formatThreadTimestamp(value) {
+      if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return "";
+      const ms = value > 1e12 ? value : value * 1000;
+      const d = new Date(ms);
+      if (Number.isNaN(d.getTime())) return "";
+      return d.toLocaleString();
+    }
+
+    function setThreads(items) {
+      const currentThreadId = el.threadId.value.trim();
+      const previousSelected = el.threadList.value;
+      el.threadList.innerHTML = "";
+      const data = Array.isArray(items) ? items : [];
+      const trackedIds = new Set(readTrackedThreadIds());
+      const filtered = el.onlyGuiThreads.checked
+        ? data.filter((t) => t && typeof t.id === "string" && trackedIds.has(t.id))
+        : data;
+
+      if (!filtered.length) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = el.onlyGuiThreads.checked ? "(no GUI threads tracked yet)" : "(no threads)";
+        el.threadList.appendChild(opt);
+        return;
+      }
+
+      for (const t of filtered) {
+        if (!t || typeof t.id !== "string" || !t.id) continue;
+        const ts = formatThreadTimestamp(
+          typeof t.updatedAt === "number" ? t.updatedAt : t.createdAt
+        );
+        const preview = typeof t.preview === "string" && t.preview.trim()
+          ? t.preview.trim().replace(/\s+/g, " ").slice(0, 80)
+          : "(no preview)";
+        const opt = document.createElement("option");
+        opt.value = t.id;
+        opt.textContent = `${ts || "(unknown time)"} | ${preview} | ${t.id}`;
+        el.threadList.appendChild(opt);
+      }
+
+      if (currentThreadId) el.threadList.value = currentThreadId;
+      if (!el.threadList.value && previousSelected) el.threadList.value = previousSelected;
+      if (!el.threadList.value && el.threadList.options.length) el.threadList.selectedIndex = 0;
+    }
+
+    async function loadThreads(silent = false) {
+      if (!silent) setStatus("Loading threads...");
+      try {
+        const res = await fetch("/api/threads?limit=100");
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Failed to load threads");
+        setThreads(data.data || []);
+        if (!silent) setStatus("Threads loaded");
+      } catch (err) {
+        if (!silent) setStatus(err.message || String(err));
+      }
+    }
+
+    function useSelectedThread() {
+      const threadId = el.threadList.value.trim();
+      if (!threadId) {
+        setStatus("No thread selected");
+        return;
+      }
+      el.threadId.value = threadId;
+      trackThreadId(threadId);
+      loadPreambleForThread(threadId);
+      setStatus("Selected thread ready");
+    }
+
+    async function loadModels() {
+      setStatus("Loading models...");
+      try {
+        const res = await fetch("/api/models");
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Failed to load models");
+        setModels(data.data || []);
+        setStatus("Models loaded");
+      } catch (err) {
+        setStatus(err.message || String(err));
+      }
+    }
+
+    async function ensureThread() {
+      const model = el.model.value.trim();
+      if (!model) {
+        throw new Error("Select a model");
+      }
+
+      const res = await fetch("/api/thread/ensure", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          threadId: el.threadId.value.trim(),
+          preamble: el.preamble.value
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to ensure thread");
+      el.threadId.value = data.threadId || "";
+      if (data.threadId) {
+        saveCurrentPreambleForThread(data.threadId);
+        trackThreadId(data.threadId);
+      }
+      await loadThreads(true);
+      return data.threadId;
+    }
+
+    async function sendNonStreaming() {
+      const res = await fetch("/api/turn", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: el.model.value.trim(),
+          threadId: el.threadId.value.trim(),
+          preamble: el.preamble.value,
+          text: el.prompt.value.trim()
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Request failed");
+
+      el.threadId.value = data.threadId || el.threadId.value;
+      trackThreadId(el.threadId.value);
+      activeTurnId = data.turnId || "";
+      el.interrupt.disabled = true;
+      appendOutput(data.text || "");
+      appendEvent("turn/completed " + (data.status || "completed"));
+      await loadThreads(true);
+      return data.status || "completed";
+    }
+
+    async function sendStreaming() {
+      const res = await fetch("/api/turn/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: el.model.value.trim(),
+          threadId: el.threadId.value.trim(),
+          preamble: el.preamble.value,
+          text: el.prompt.value.trim()
+        })
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Streaming request failed");
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finalStatus = "completed";
+
+      let sawDoneMarker = false;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let split;
+        while ((split = buffer.indexOf("\n\n")) >= 0) {
+          const raw = buffer.slice(0, split);
+          buffer = buffer.slice(split + 2);
+
+          for (const line of raw.split("\n")) {
+            if (!line.startsWith("data: ")) continue;
+            const body = line.slice(6);
+            if (body === "[DONE]") {
+              sawDoneMarker = true;
+              break;
+            }
+
+            let msg;
+            try {
+              msg = JSON.parse(body);
+            } catch {
+              continue;
+            }
+
+            if (msg.type === "meta") {
+              if (msg.threadId) el.threadId.value = msg.threadId;
+              if (msg.threadId) trackThreadId(msg.threadId);
+              if (msg.turnId) {
+                activeTurnId = msg.turnId;
+                el.interrupt.disabled = false;
+              }
+              continue;
+            }
+
+            if (msg.type === "delta" && typeof msg.delta === "string") {
+              appendOutput(msg.delta);
+              continue;
+            }
+
+            if (msg.type === "status") {
+              setStatus(msg.message || "running");
+              continue;
+            }
+
+            if (msg.type === "event") {
+              appendEvent(msg.method || "event");
+              continue;
+            }
+
+            if (msg.type === "error") {
+              throw new Error(msg.message || "Turn failed");
+            }
+
+            if (msg.type === "done") {
+              appendEvent("turn/completed " + (msg.status || "completed"));
+              finalStatus = msg.status || "completed";
+              activeTurnId = "";
+              el.interrupt.disabled = true;
+            }
+          }
+          if (sawDoneMarker) break;
+        }
+        if (sawDoneMarker) break;
+      }
+      return finalStatus;
+    }
+
+    async function send() {
+      const prompt = el.prompt.value.trim();
+      if (!prompt) {
+        setStatus("Prompt is required");
+        return;
+      }
+      if (!el.model.value.trim()) {
+        setStatus("Model is required");
+        return;
+      }
+
+      el.output.textContent = "";
+      setBusy(true);
+      setStatus("Preparing thread...");
+      activeTurnId = "";
+      el.interrupt.disabled = true;
+
+      try {
+        await ensureThread();
+        setStatus(el.stream.checked ? "Running (streaming)..." : "Running...");
+
+        let finalStatus = "completed";
+        if (el.stream.checked) {
+          finalStatus = await sendStreaming();
+        } else {
+          finalStatus = await sendNonStreaming();
+        }
+
+        if (finalStatus === "interrupted") {
+          setStatus("Interrupted");
+        } else if (finalStatus === "completed") {
+          setStatus("Done");
+        } else if (finalStatus) {
+          setStatus("Finished: " + finalStatus);
+        } else {
+          setStatus("Done");
+        }
+      } catch (err) {
+        setStatus(err.message || String(err));
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function interrupt() {
+      const threadId = el.threadId.value.trim();
+      if (!threadId || !activeTurnId) return;
+      try {
+        await fetch("/api/turn/interrupt", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ threadId, turnId: activeTurnId })
+        });
+        setStatus("Interrupt requested");
+        appendEvent("turn/interrupt requested");
+      } catch (err) {
+        setStatus(err.message || String(err));
+      }
+    }
+
+    function clearOutput() {
+      el.output.textContent = "";
+      el.events.textContent = "";
+      setStatus("");
+    }
+
+    async function loadVersion() {
+      try {
+        const res = await fetch("/api/version", { cache: "no-store" });
+        if (!res.ok) return;
+        const v = await res.json().catch(() => null);
+        if (!v) return;
+        const version = typeof v.version === "string" ? v.version : "";
+        const sha = v.git && typeof v.git.sha === "string" ? v.git.sha : "";
+        const dirty = v.git && v.git.dirty ? "*" : "";
+        const build = v.build && typeof v.build.id === "string" ? v.build.id : "";
+        const startedAt = typeof v.startedAt === "string" ? v.startedAt : "";
+        el.version.textContent = [
+          version && `v${version}`,
+          (sha ? `${sha}${dirty}` : (build ? `build ${build}` : "")),
+          startedAt && `started ${startedAt}`,
+        ].filter(Boolean).join(" · ");
+      } catch {
+        // ignore
+      }
+    }
+
+    function init() {
+      loadVersion();
+      el.loadModels.addEventListener("click", loadModels);
+      el.refreshThreads.addEventListener("click", () => {
+        loadThreads(false);
+      });
+      el.onlyGuiThreads.addEventListener("change", () => {
+        loadThreads(true);
+      });
+      el.useThread.addEventListener("click", useSelectedThread);
+      el.threadList.addEventListener("dblclick", useSelectedThread);
+      el.ensureThread.addEventListener("click", async () => {
+        setStatus("Ensuring thread...");
+        try {
+          await ensureThread();
+          loadPreambleForThread(el.threadId.value);
+          setStatus("Thread ready");
+        } catch (err) {
+          setStatus(err.message || String(err));
+        }
+      });
+      el.threadId.addEventListener("blur", () => {
+        loadPreambleForThread(el.threadId.value);
+      });
+      el.preamble.addEventListener("blur", () => {
+        saveCurrentPreambleForThread(el.threadId.value);
+      });
+      el.send.addEventListener("click", send);
+      el.interrupt.addEventListener("click", interrupt);
+      el.clear.addEventListener("click", clearOutput);
+      loadModels();
+      loadThreads(true);
+    }
+
+    init();
+  </script>
+</body>
+</html>

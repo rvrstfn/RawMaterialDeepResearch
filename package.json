@@ -1,0 +1,20 @@
+{
+  "name": "material-search-agents-gui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lightweight chat UI backed by OpenAI Agents SDK for ingredient corpus deep research",
+  "main": "server.js",
+  "scripts": {
+    "setup": "bash scripts/setup.sh",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@openai/agents": "^0.4.6",
+    "better-sqlite3": "^11.8.1",
+    "openai": "^6.2.0",
+    "zod": "^4.3.6"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

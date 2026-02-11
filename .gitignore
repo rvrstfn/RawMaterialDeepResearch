@@ -1,0 +1,17 @@
+node_modules/
+
+# Runtime/local state
+.env
+.app-settings.json
+.thread-meta.json
+.auth.db
+.auth.db-*
+conversations/
+ingredients/
+
+# Local tooling artifacts
+.playwright-cli/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
