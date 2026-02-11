@@ -54,6 +54,8 @@ const TURN_TIMEOUT_MS = Number(process.env.TURN_TIMEOUT_MS || 10 * 60 * 1000);
 const MAX_TURNS_DEFAULT = Number(process.env.MAX_TURNS || 25);
 const PUBLIC_DIR = path.join(__dirname, "public");
 const CONVERSATIONS_DIR = path.join(__dirname, "conversations");
+const TURN_LOGS_DIR = path.join(__dirname, "logs", "turns");
+const CHAT_LOGS_DIR = path.join(__dirname, "logs", "chats");
 const THREAD_META_PATH = path.join(__dirname, ".thread-meta.json");
 const APP_SETTINGS_PATH = path.join(__dirname, ".app-settings.json");
 const SESSION_COOKIE_NAME = "codexgui_session";
@@ -316,6 +318,250 @@ function parseRgMatches(stdout, maxMatches) {
     });
   }
   return hits;
+}
+
+function toIsoNow() {
+  return new Date().toISOString();
+}
+
+function createTurnLogFiles({ turnId, threadId, conversationDir, model, maxTurns, userQuery }) {
+  ensureDirSync(TURN_LOGS_DIR);
+  ensureDirSync(CHAT_LOGS_DIR);
+  const stamp = safeNowFolderName();
+  const baseName = `${stamp}_${turnId}`;
+  const mdPath = path.join(TURN_LOGS_DIR, `${baseName}.md`);
+  const jsonPath = path.join(TURN_LOGS_DIR, `${baseName}.json`);
+  const safeThreadId = String(threadId || "").replace(/[^a-zA-Z0-9._-]/g, "_");
+  const chatMdPath = path.join(CHAT_LOGS_DIR, `${safeThreadId}.md`);
+  const chatJsonPath = path.join(CHAT_LOGS_DIR, `${safeThreadId}.json`);
+
+  const data = {
+    turnId,
+    threadId,
+    model,
+    maxTurns,
+    userQuery: String(userQuery || ""),
+    conversationDir: conversationDir || "",
+    startedAt: toIsoNow(),
+    finishedAt: "",
+    status: "running",
+    turnsUsed: null,
+    finalAnswer: "",
+    error: "",
+    cliCommands: [],
+    reasoningTrace: [],
+  };
+
+  const save = () => {
+    try {
+      fs.writeFileSync(jsonPath, JSON.stringify(data, null, 2), "utf8");
+    } catch {
+      // ignore
+    }
+
+    const lines = [];
+    lines.push(`# Agent Turn Log`);
+    lines.push("");
+    lines.push(`- Turn ID: ${data.turnId}`);
+    lines.push(`- Thread ID: ${data.threadId}`);
+    lines.push(`- Model: ${data.model}`);
+    lines.push(`- Max Turns: ${data.maxTurns}`);
+    if (typeof data.turnsUsed === "number") lines.push(`- Turns Used: ${data.turnsUsed}`);
+    lines.push(`- Status: ${data.status}`);
+    lines.push(`- Started At: ${data.startedAt}`);
+    if (data.finishedAt) lines.push(`- Finished At: ${data.finishedAt}`);
+    if (data.conversationDir) lines.push(`- Conversation Dir: ${data.conversationDir}`);
+    lines.push("");
+    lines.push(`## User Query`);
+    lines.push("");
+    lines.push(data.userQuery || "(empty)");
+    lines.push("");
+    lines.push(`## CLI Commands`);
+    lines.push("");
+    if (!data.cliCommands.length) {
+      lines.push(`(no CLI command was called by tools in this turn)`);
+    } else {
+      for (const cmd of data.cliCommands) {
+        const args = Array.isArray(cmd.args) ? cmd.args.join(" ") : "";
+        const cmdLine = cmd.command ? `${cmd.command} ${args}`.trim() : "";
+        lines.push(`- [${cmd.ts || ""}] \`${cmdLine}\``);
+        if (cmd.cwd) lines.push(`  - cwd: ${cmd.cwd}`);
+        if (typeof cmd.exitCode === "number") lines.push(`  - exitCode: ${cmd.exitCode}`);
+        if (cmd.error) lines.push(`  - error: ${cmd.error}`);
+        if (cmd.stderr) lines.push(`  - stderr: ${cmd.stderr}`);
+      }
+    }
+    lines.push("");
+    lines.push(`## Reasoning Trace (Summary Events)`);
+    lines.push("");
+    if (!data.reasoningTrace.length) {
+      lines.push(`(no reasoning summary events captured)`);
+    } else {
+      for (const ev of data.reasoningTrace) {
+        const bits = [ev.ts ? `[${ev.ts}]` : "", ev.kind || ""].filter(Boolean).join(" ");
+        if (ev.text) lines.push(`- ${bits}: ${ev.text}`);
+        else if (ev.delta) lines.push(`- ${bits}: ${ev.delta}`);
+        else lines.push(`- ${bits}`);
+      }
+    }
+    lines.push("");
+    lines.push(`## Final Answer`);
+    lines.push("");
+    lines.push(data.finalAnswer || "(empty)");
+    if (data.error) {
+      lines.push("");
+      lines.push(`## Error`);
+      lines.push("");
+      lines.push(data.error);
+    }
+    lines.push("");
+
+    try {
+      fs.writeFileSync(mdPath, lines.join("\n"), "utf8");
+    } catch {
+      // ignore
+    }
+  };
+
+  return {
+    mdPath,
+    jsonPath,
+    chatMdPath,
+    chatJsonPath,
+    recordCliCommand(entry) {
+      if (!entry || typeof entry !== "object") return;
+      data.cliCommands.push({ ts: toIsoNow(), ...entry });
+      save();
+    },
+    recordReasoning(entry) {
+      if (!entry || typeof entry !== "object") return;
+      data.reasoningTrace.push({ ts: toIsoNow(), ...entry });
+      if (data.reasoningTrace.length > 2000) data.reasoningTrace = data.reasoningTrace.slice(-2000);
+      save();
+    },
+    finalize({ status, turnsUsed, finalAnswer, error }) {
+      data.status = status || data.status;
+      data.finishedAt = toIsoNow();
+      if (typeof turnsUsed === "number" && Number.isFinite(turnsUsed)) data.turnsUsed = turnsUsed;
+      data.finalAnswer = typeof finalAnswer === "string" ? finalAnswer : data.finalAnswer;
+      data.error = typeof error === "string" ? error : "";
+      save();
+      try {
+        upsertChatLogTurn(data);
+      } catch {
+        // ignore chat-level logging failures
+      }
+    },
+  };
+}
+
+function upsertChatLogTurn(turnData) {
+  if (!turnData || typeof turnData !== "object" || !turnData.threadId) return;
+  ensureDirSync(CHAT_LOGS_DIR);
+  const safeThreadId = String(turnData.threadId).replace(/[^a-zA-Z0-9._-]/g, "_");
+  const jsonPath = path.join(CHAT_LOGS_DIR, `${safeThreadId}.json`);
+  const mdPath = path.join(CHAT_LOGS_DIR, `${safeThreadId}.md`);
+
+  let current = {
+    threadId: turnData.threadId,
+    conversationDir: turnData.conversationDir || "",
+    createdAt: turnData.startedAt || toIsoNow(),
+    updatedAt: toIsoNow(),
+    turns: [],
+  };
+  try {
+    const raw = fs.readFileSync(jsonPath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      current = {
+        ...current,
+        ...parsed,
+        turns: Array.isArray(parsed.turns) ? parsed.turns : [],
+      };
+    }
+  } catch {
+    // new chat log
+  }
+
+  const idx = current.turns.findIndex((t) => t && t.turnId === turnData.turnId);
+  if (idx >= 0) current.turns[idx] = turnData;
+  else current.turns.push(turnData);
+  current.updatedAt = toIsoNow();
+  if (turnData.conversationDir) current.conversationDir = turnData.conversationDir;
+
+  current.turns.sort((a, b) => {
+    const ta = Date.parse(a && a.startedAt ? a.startedAt : "") || 0;
+    const tb = Date.parse(b && b.startedAt ? b.startedAt : "") || 0;
+    return ta - tb;
+  });
+
+  fs.writeFileSync(jsonPath, JSON.stringify(current, null, 2), "utf8");
+
+  const lines = [];
+  lines.push(`# Chat Log`);
+  lines.push("");
+  lines.push(`- Thread ID: ${current.threadId}`);
+  if (current.conversationDir) lines.push(`- Conversation Dir: ${current.conversationDir}`);
+  lines.push(`- Created At: ${current.createdAt}`);
+  lines.push(`- Updated At: ${current.updatedAt}`);
+  lines.push(`- Turns: ${current.turns.length}`);
+  lines.push("");
+
+  for (const turn of current.turns) {
+    lines.push(`## Turn ${turn.turnId}`);
+    lines.push("");
+    lines.push(`- Status: ${turn.status || ""}`);
+    lines.push(`- Model: ${turn.model || ""}`);
+    if (typeof turn.maxTurns === "number") lines.push(`- Max Turns: ${turn.maxTurns}`);
+    if (typeof turn.turnsUsed === "number") lines.push(`- Turns Used: ${turn.turnsUsed}`);
+    lines.push(`- Started At: ${turn.startedAt || ""}`);
+    if (turn.finishedAt) lines.push(`- Finished At: ${turn.finishedAt}`);
+    lines.push("");
+    lines.push(`### User Query`);
+    lines.push("");
+    lines.push(turn.userQuery || "(empty)");
+    lines.push("");
+    lines.push(`### CLI Commands`);
+    lines.push("");
+    if (!Array.isArray(turn.cliCommands) || !turn.cliCommands.length) {
+      lines.push(`(no CLI command was called by tools in this turn)`);
+    } else {
+      for (const cmd of turn.cliCommands) {
+        const args = Array.isArray(cmd.args) ? cmd.args.join(" ") : "";
+        const cmdLine = cmd.command ? `${cmd.command} ${args}`.trim() : "";
+        lines.push(`- [${cmd.ts || ""}] \`${cmdLine}\``);
+        if (cmd.cwd) lines.push(`  - cwd: ${cmd.cwd}`);
+        if (typeof cmd.exitCode === "number") lines.push(`  - exitCode: ${cmd.exitCode}`);
+        if (cmd.error) lines.push(`  - error: ${cmd.error}`);
+      }
+    }
+    lines.push("");
+    lines.push(`### Reasoning Trace (Summary Events)`);
+    lines.push("");
+    if (!Array.isArray(turn.reasoningTrace) || !turn.reasoningTrace.length) {
+      lines.push(`(no reasoning summary events captured)`);
+    } else {
+      for (const ev of turn.reasoningTrace) {
+        const bits = [ev.ts ? `[${ev.ts}]` : "", ev.kind || ""].filter(Boolean).join(" ");
+        if (ev.text) lines.push(`- ${bits}: ${ev.text}`);
+        else if (ev.delta) lines.push(`- ${bits}: ${ev.delta}`);
+        else lines.push(`- ${bits}`);
+      }
+    }
+    lines.push("");
+    lines.push(`### Final Answer`);
+    lines.push("");
+    lines.push(turn.finalAnswer || "(empty)");
+    if (turn.error) {
+      lines.push("");
+      lines.push(`### Error`);
+      lines.push("");
+      lines.push(turn.error);
+    }
+    lines.push("");
+  }
+
+  fs.writeFileSync(mdPath, lines.join("\n"), "utf8");
 }
 
 function escapeRegExp(value) {
@@ -627,7 +873,7 @@ class AgentsClient {
     };
   }
 
-  createResearchTools() {
+  createResearchTools(turnLog) {
     const root = this.ingredientsRoot;
 
     // The Agents SDK defaults function tools to `strict: true`, which requires a
@@ -750,6 +996,17 @@ class AgentsClient {
           maxBuffer: 16 * 1024 * 1024,
         });
 
+        if (turnLog) {
+          turnLog.recordCliCommand({
+            command: "rg",
+            args,
+            cwd: root,
+            exitCode: Number.isFinite(rg.status) ? rg.status : -1,
+            error: rg.error ? (rg.error.message || String(rg.error)) : "",
+            stderr: String(rg.stderr || "").trim().slice(0, 1000),
+          });
+        }
+
         if (!rg.error) {
           hits = parseRgMatches(rg.stdout, maxMatches).map((h) => ({
             file: h.file.replace(/\\/g, "/"),
@@ -865,7 +1122,7 @@ class AgentsClient {
     return [listFilesTool, searchTool, readFileTool];
   }
 
-  buildAgent({ model, threadId }) {
+  buildAgent({ model, threadId, turnLog }) {
     const preamble = this.getThreadPreamble(threadId);
     const reasoningEffort = this.getReasoningEffort();
 
@@ -895,7 +1152,7 @@ class AgentsClient {
               summary: (["auto", "concise", "detailed"].includes(REASONING_SUMMARY) ? REASONING_SUMMARY : "auto"),
             },
           },
-      tools: this.createResearchTools(),
+      tools: this.createResearchTools(turnLog),
     });
   }
 
@@ -926,9 +1183,17 @@ class AgentsClient {
 
   async runTurn({ threadId, model, text, stream = false, conversationDir = "", onMeta, onDelta, onEvent }) {
     const session = this.getSession(threadId);
-    const agent = this.buildAgent({ model, threadId });
     const turnId = `turn_${Date.now()}_${crypto.randomBytes(5).toString("hex")}`;
     const maxTurns = this.getMaxTurns();
+    const turnLog = createTurnLogFiles({
+      turnId,
+      threadId,
+      conversationDir,
+      model: model || this.getDefaultModel(),
+      maxTurns,
+      userQuery: text,
+    });
+    const agent = this.buildAgent({ model, threadId, turnLog });
 
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), TURN_TIMEOUT_MS);
@@ -981,6 +1246,11 @@ class AgentsClient {
           accumulated = finalText;
           this.setThreadMeta(threadId, { lastPreview: finalText.slice(0, 220) });
         }
+        turnLog.finalize({
+          status: abortController.signal.aborted ? "interrupted" : "completed",
+          turnsUsed: 1,
+          finalAnswer: finalText,
+        });
 
         return {
           threadId,
@@ -989,6 +1259,10 @@ class AgentsClient {
           text: finalText,
           turnsUsed: 1,
           maxTurns,
+          turnLogMdPath: path.relative(__dirname, turnLog.mdPath).replace(/\\/g, "/"),
+          turnLogJsonPath: path.relative(__dirname, turnLog.jsonPath).replace(/\\/g, "/"),
+          chatLogMdPath: path.relative(__dirname, turnLog.chatMdPath).replace(/\\/g, "/"),
+          chatLogJsonPath: path.relative(__dirname, turnLog.chatJsonPath).replace(/\\/g, "/"),
         };
       }
 
@@ -1036,6 +1310,14 @@ class AgentsClient {
 
             mappedMethod = "item/reasoning/summaryPartAdded";
             mappedParams = { phase, text: partText, summaryIndex, raw };
+            if (turnLog) {
+              turnLog.recordReasoning({
+                kind: "summary_part",
+                phase,
+                summaryIndex,
+                text: partText,
+              });
+            }
             if (reasoningLog) reasoningLog.write({
               event: "summary_part",
               rawType: eventType,
@@ -1054,6 +1336,13 @@ class AgentsClient {
               ? src.summary_index
               : (typeof src.summaryIndex === "number" ? src.summaryIndex : null);
             mappedParams = { delta: d, summaryIndex, raw };
+            if (turnLog && d) {
+              turnLog.recordReasoning({
+                kind: "summary_delta",
+                summaryIndex,
+                delta: d,
+              });
+            }
             if (reasoningLog) reasoningLog.write({ event: "summary_text_delta", rawType: eventType, mappedMethod, delta: d });
           }
 
@@ -1107,6 +1396,11 @@ class AgentsClient {
       if (reasoningLog) {
         reasoningLog.write({ event: "turn_end", status: abortController.signal.aborted ? "interrupted" : "completed" });
       }
+      turnLog.finalize({
+        status: abortController.signal.aborted ? "interrupted" : "completed",
+        turnsUsed: responseIds.size || 1,
+        finalAnswer: finalText,
+      });
 
       return {
         threadId,
@@ -1115,12 +1409,22 @@ class AgentsClient {
         text: finalText,
         turnsUsed: responseIds.size || 1,
         maxTurns,
+        turnLogMdPath: path.relative(__dirname, turnLog.mdPath).replace(/\\/g, "/"),
+        turnLogJsonPath: path.relative(__dirname, turnLog.jsonPath).replace(/\\/g, "/"),
+        chatLogMdPath: path.relative(__dirname, turnLog.chatMdPath).replace(/\\/g, "/"),
+        chatLogJsonPath: path.relative(__dirname, turnLog.chatJsonPath).replace(/\\/g, "/"),
       };
     } catch (err) {
       const message = err && err.message ? String(err.message) : String(err);
       const isAbort = abortController.signal.aborted || /abort|cancel/i.test(message);
       if (isAbort) {
         if (reasoningLog) reasoningLog.write({ event: "turn_end", status: "interrupted" });
+        turnLog.finalize({
+          status: "interrupted",
+          turnsUsed: 1,
+          finalAnswer: accumulated,
+          error: message,
+        });
         return {
           threadId,
           turnId,
@@ -1128,9 +1432,18 @@ class AgentsClient {
           text: accumulated,
           turnsUsed: 1,
           maxTurns,
+          turnLogMdPath: path.relative(__dirname, turnLog.mdPath).replace(/\\/g, "/"),
+          turnLogJsonPath: path.relative(__dirname, turnLog.jsonPath).replace(/\\/g, "/"),
+          chatLogMdPath: path.relative(__dirname, turnLog.chatMdPath).replace(/\\/g, "/"),
+          chatLogJsonPath: path.relative(__dirname, turnLog.chatJsonPath).replace(/\\/g, "/"),
         };
       }
       if (reasoningLog) reasoningLog.write({ event: "turn_error", message });
+      turnLog.finalize({
+        status: "error",
+        finalAnswer: accumulated,
+        error: message,
+      });
       throw err;
     } finally {
       clearTimeout(timeout);

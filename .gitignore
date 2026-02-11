@@ -8,6 +8,7 @@ node_modules/
 .auth.db-*
 conversations/
 ingredients/
+logs/
 
 # Local tooling artifacts
 .playwright-cli/
