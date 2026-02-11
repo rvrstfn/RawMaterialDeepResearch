@@ -49,14 +49,15 @@ const DEFAULT_MODEL_FALLBACK = process.env.DEFAULT_MODEL || "gpt-5-mini";
 // Opt-in to model-provided reasoning summaries (not raw chain-of-thought).
 // Set `REASONING_SUMMARY=off` to disable.
 const REASONING_SUMMARY = String(process.env.REASONING_SUMMARY || "auto").trim().toLowerCase();
-const REASONING_EFFORT = String(process.env.REASONING_EFFORT || "low").trim().toLowerCase();
+const REASONING_EFFORT_DEFAULT = String(process.env.REASONING_EFFORT || "low").trim().toLowerCase();
 const TURN_TIMEOUT_MS = Number(process.env.TURN_TIMEOUT_MS || 10 * 60 * 1000);
-const MAX_TURNS = Number(process.env.MAX_TURNS || 25);
+const MAX_TURNS_DEFAULT = Number(process.env.MAX_TURNS || 25);
 const PUBLIC_DIR = path.join(__dirname, "public");
 const CONVERSATIONS_DIR = path.join(__dirname, "conversations");
 const THREAD_META_PATH = path.join(__dirname, ".thread-meta.json");
 const APP_SETTINGS_PATH = path.join(__dirname, ".app-settings.json");
 const SESSION_COOKIE_NAME = "codexgui_session";
+const ALLOWED_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"];
 
 const SERVER_STARTED_AT = new Date().toISOString();
 const PACKAGE_VERSION = (() => {
@@ -393,10 +394,27 @@ class AgentsClient {
     return configured || DEFAULT_THREAD_PREAMBLE_FALLBACK;
   }
 
+  getReasoningEffort() {
+    const configured = this.appSettings && typeof this.appSettings.reasoningEffort === "string"
+      ? this.appSettings.reasoningEffort.trim().toLowerCase()
+      : "";
+    if (ALLOWED_REASONING_EFFORTS.includes(configured)) return configured;
+    return ALLOWED_REASONING_EFFORTS.includes(REASONING_EFFORT_DEFAULT) ? REASONING_EFFORT_DEFAULT : "low";
+  }
+
+  getMaxTurns() {
+    const configured = this.appSettings ? Number(this.appSettings.maxTurns) : NaN;
+    if (Number.isFinite(configured)) return clampNumber(configured, 1, 100, 25);
+    if (Number.isFinite(MAX_TURNS_DEFAULT)) return clampNumber(MAX_TURNS_DEFAULT, 1, 100, 25);
+    return 25;
+  }
+
   getAdminSettings() {
     return {
       defaultModel: this.getDefaultModel(),
       defaultThreadPreamble: this.getDefaultThreadPreamble(),
+      reasoningEffort: this.getReasoningEffort(),
+      maxTurns: this.getMaxTurns(),
       ingredientsRoot: this.ingredientsRoot,
     };
   }
@@ -409,8 +427,15 @@ class AgentsClient {
     const defaultThreadPreamble = typeof next.defaultThreadPreamble === "string"
       ? next.defaultThreadPreamble.trim()
       : current.defaultThreadPreamble;
+    const reasoningEffort = typeof next.reasoningEffort === "string" &&
+      ALLOWED_REASONING_EFFORTS.includes(next.reasoningEffort.trim().toLowerCase())
+      ? next.reasoningEffort.trim().toLowerCase()
+      : current.reasoningEffort;
+    const maxTurns = Number.isFinite(Number(next.maxTurns))
+      ? clampNumber(Number(next.maxTurns), 1, 100, current.maxTurns)
+      : current.maxTurns;
 
-    this.appSettings = { defaultModel, defaultThreadPreamble };
+    this.appSettings = { defaultModel, defaultThreadPreamble, reasoningEffort, maxTurns };
     saveJson(APP_SETTINGS_PATH, this.appSettings);
     return this.getAdminSettings();
   }
@@ -842,6 +867,7 @@ class AgentsClient {
 
   buildAgent({ model, threadId }) {
     const preamble = this.getThreadPreamble(threadId);
+    const reasoningEffort = this.getReasoningEffort();
 
     const instructions = [
       preamble,
@@ -865,7 +891,7 @@ class AgentsClient {
         ? {}
         : {
             reasoning: {
-              effort: (["none", "minimal", "low", "medium", "high", "xhigh"].includes(REASONING_EFFORT) ? REASONING_EFFORT : "low"),
+              effort: reasoningEffort,
               summary: (["auto", "concise", "detailed"].includes(REASONING_SUMMARY) ? REASONING_SUMMARY : "auto"),
             },
           },
@@ -902,6 +928,7 @@ class AgentsClient {
     const session = this.getSession(threadId);
     const agent = this.buildAgent({ model, threadId });
     const turnId = `turn_${Date.now()}_${crypto.randomBytes(5).toString("hex")}`;
+    const maxTurns = this.getMaxTurns();
 
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), TURN_TIMEOUT_MS);
@@ -945,7 +972,7 @@ class AgentsClient {
       if (!stream) {
         const result = await run(agent, text, {
           session,
-          maxTurns: MAX_TURNS,
+          maxTurns,
           signal: abortController.signal,
         });
 
@@ -961,7 +988,7 @@ class AgentsClient {
           status: abortController.signal.aborted ? "interrupted" : "completed",
           text: finalText,
           turnsUsed: 1,
-          maxTurns: MAX_TURNS,
+          maxTurns,
         };
       }
 
@@ -972,7 +999,7 @@ class AgentsClient {
       const streamResult = await run(agent, text, {
         session,
         stream: true,
-        maxTurns: MAX_TURNS,
+        maxTurns,
         signal: abortController.signal,
       });
 
@@ -1087,7 +1114,7 @@ class AgentsClient {
         status: abortController.signal.aborted ? "interrupted" : "completed",
         text: finalText,
         turnsUsed: responseIds.size || 1,
-        maxTurns: MAX_TURNS,
+        maxTurns,
       };
     } catch (err) {
       const message = err && err.message ? String(err.message) : String(err);
@@ -1100,7 +1127,7 @@ class AgentsClient {
           status: "interrupted",
           text: accumulated,
           turnsUsed: 1,
-          maxTurns: MAX_TURNS,
+          maxTurns,
         };
       }
       if (reasoningLog) reasoningLog.write({ event: "turn_error", message });
@@ -1270,6 +1297,8 @@ const server = http.createServer(async (req, res) => {
       const settings = agentsClient.setAdminSettings({
         defaultModel: typeof body.defaultModel === "string" ? body.defaultModel : undefined,
         defaultThreadPreamble: typeof body.defaultThreadPreamble === "string" ? body.defaultThreadPreamble : undefined,
+        reasoningEffort: typeof body.reasoningEffort === "string" ? body.reasoningEffort : undefined,
+        maxTurns: Number.isFinite(Number(body.maxTurns)) ? Number(body.maxTurns) : undefined,
       });
       return toJson(res, 200, settings);
     }

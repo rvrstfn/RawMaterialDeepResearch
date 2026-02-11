@@ -49,6 +49,25 @@
       <button id="loadCurrent" type="button">Load Current</button>
     </div>
 
+    <div class="row">
+      <label>
+        Reasoning Effort
+        <select id="reasoningEffort">
+          <option value="none">none</option>
+          <option value="minimal">minimal</option>
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+          <option value="xhigh">xhigh</option>
+        </select>
+      </label>
+      <label>
+        Max Turns
+        <input id="maxTurns" type="number" min="1" max="100" step="1" value="25">
+      </label>
+      <div class="status" style="align-self:end;">Applied to new turns immediately.</div>
+    </div>
+
     <label>
       Default Thread Preamble
       <textarea id="preamble" placeholder="This preamble is auto-applied once for each new thread."></textarea>
@@ -104,6 +123,8 @@
   <script>
     const el = {
       model: document.getElementById("model"),
+      reasoningEffort: document.getElementById("reasoningEffort"),
+      maxTurns: document.getElementById("maxTurns"),
       reloadModels: document.getElementById("reloadModels"),
       loadCurrent: document.getElementById("loadCurrent"),
       preamble: document.getElementById("preamble"),
@@ -123,7 +144,12 @@
       usersBody: document.getElementById("usersBody")
     };
 
-    let loadedSettings = { defaultModel: "", defaultThreadPreamble: "" };
+    let loadedSettings = {
+      defaultModel: "",
+      defaultThreadPreamble: "",
+      reasoningEffort: "low",
+      maxTurns: 25
+    };
 
     function setStatus(text) {
       el.status.textContent = text || "";
@@ -177,10 +203,14 @@
       if (!res.ok) throw new Error(data.error || "Failed to load settings");
       loadedSettings = {
         defaultModel: typeof data.defaultModel === "string" ? data.defaultModel : "",
-        defaultThreadPreamble: typeof data.defaultThreadPreamble === "string" ? data.defaultThreadPreamble : ""
+        defaultThreadPreamble: typeof data.defaultThreadPreamble === "string" ? data.defaultThreadPreamble : "",
+        reasoningEffort: typeof data.reasoningEffort === "string" ? data.reasoningEffort : "low",
+        maxTurns: Number.isFinite(Number(data.maxTurns)) ? Number(data.maxTurns) : 25
       };
       if (loadedSettings.defaultModel) el.model.value = loadedSettings.defaultModel;
       el.preamble.value = loadedSettings.defaultThreadPreamble;
+      el.reasoningEffort.value = loadedSettings.reasoningEffort;
+      el.maxTurns.value = String(loadedSettings.maxTurns);
     }
 
     async function refreshAll() {
@@ -200,9 +230,11 @@
         const res = await fetch("/api/admin/settings", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+              body: JSON.stringify({
             defaultModel: el.model.value.trim(),
-            defaultThreadPreamble: el.preamble.value
+            defaultThreadPreamble: el.preamble.value,
+            reasoningEffort: el.reasoningEffort.value,
+            maxTurns: Number(el.maxTurns.value)
           })
         });
         if (res.status === 401) {
@@ -221,6 +253,8 @@
     function resetForm() {
       el.model.value = loadedSettings.defaultModel || el.model.value;
       el.preamble.value = loadedSettings.defaultThreadPreamble || "";
+      el.reasoningEffort.value = loadedSettings.reasoningEffort || "low";
+      el.maxTurns.value = String(loadedSettings.maxTurns || 25);
       setStatus("Reset");
     }
 
