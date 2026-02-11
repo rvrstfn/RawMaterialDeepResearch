@@ -60,6 +60,20 @@ const THREAD_META_PATH = path.join(__dirname, ".thread-meta.json");
 const APP_SETTINGS_PATH = path.join(__dirname, ".app-settings.json");
 const SESSION_COOKIE_NAME = "codexgui_session";
 const ALLOWED_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"];
+const DEFAULT_STANDARD_PRICING_PER_1M = {
+  // Source (standard processing): https://openai.com/api/pricing/
+  // gpt-5.2: input $1.75, cached input $0.175, output $14.00 per 1M tokens.
+  "gpt-5.2": { input: 1.75, cachedInput: 0.175, output: 14.0, source: "openai_standard_pricing_2026-02-11" },
+  "gpt-5.2-pro": { input: 21.0, cachedInput: 0, output: 168.0, source: "openai_standard_pricing_2026-02-11" },
+  "gpt-5": { input: 1.25, cachedInput: 0.125, output: 10.0, source: "openai_standard_pricing_2026-02-11" },
+  "gpt-5-mini": { input: 0.25, cachedInput: 0.025, output: 2.0, source: "openai_standard_pricing_2026-02-11" },
+  "gpt-5-nano": { input: 0.05, cachedInput: 0.005, output: 0.4, source: "openai_standard_pricing_2026-02-11" },
+  "gpt-4.1": { input: 2.0, cachedInput: 0.5, output: 8.0, source: "openai_standard_pricing_2026-02-11" },
+  "gpt-4.1-mini": { input: 0.4, cachedInput: 0.1, output: 1.6, source: "openai_standard_pricing_2026-02-11" },
+  "gpt-4.1-nano": { input: 0.1, cachedInput: 0.025, output: 0.4, source: "openai_standard_pricing_2026-02-11" },
+  "gpt-4o": { input: 2.5, cachedInput: 1.25, output: 10.0, source: "openai_standard_pricing_2026-02-11" },
+  "gpt-4o-mini": { input: 0.15, cachedInput: 0.075, output: 0.6, source: "openai_standard_pricing_2026-02-11" },
+};
 
 const SERVER_STARTED_AT = new Date().toISOString();
 const PACKAGE_VERSION = (() => {
@@ -320,6 +334,53 @@ function parseRgMatches(stdout, maxMatches) {
   return hits;
 }
 
+function getPricingTable() {
+  const raw = typeof process.env.OPENAI_PRICING_PER_1M_JSON === "string"
+    ? process.env.OPENAI_PRICING_PER_1M_JSON.trim()
+    : "";
+  if (!raw) return DEFAULT_STANDARD_PRICING_PER_1M;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return DEFAULT_STANDARD_PRICING_PER_1M;
+    return { ...DEFAULT_STANDARD_PRICING_PER_1M, ...parsed };
+  } catch {
+    return DEFAULT_STANDARD_PRICING_PER_1M;
+  }
+}
+
+function pickPricingForModel(model) {
+  const table = getPricingTable();
+  const m = String(model || "").trim().toLowerCase();
+  if (!m) return null;
+  if (table[m]) return { key: m, ...table[m] };
+  for (const key of Object.keys(table)) {
+    if (m.startsWith(`${key.toLowerCase()}-`)) return { key, ...table[key] };
+  }
+  return null;
+}
+
+function estimateCostUsd({ model, inputTokens, cachedTokens, outputTokens }) {
+  const price = pickPricingForModel(model);
+  if (!price) return { estimatedCostUsd: 0, pricingModelKey: "", pricingSource: "" };
+
+  const input = Number(inputTokens || 0);
+  const cached = Number(cachedTokens || 0);
+  const output = Number(outputTokens || 0);
+  const per1mInput = Number(price.input || 0);
+  const per1mCached = Number(price.cachedInput || 0);
+  const per1mOutput = Number(price.output || 0);
+
+  const cost = (input / 1_000_000) * per1mInput +
+    (cached / 1_000_000) * per1mCached +
+    (output / 1_000_000) * per1mOutput;
+
+  return {
+    estimatedCostUsd: Number.isFinite(cost) ? Number(cost.toFixed(8)) : 0,
+    pricingModelKey: String(price.key || ""),
+    pricingSource: String(price.source || ""),
+  };
+}
+
 function toIsoNow() {
   return new Date().toISOString();
 }
@@ -336,9 +397,14 @@ function createTurnLogFiles({ turnId, threadId, conversationDir, model, maxTurns
   const chatJsonPath = path.join(CHAT_LOGS_DIR, `${safeThreadId}.json`);
 
   const data = {
+    queryId: turnId,
+    runId: "",
+    turnIndex: null,
     turnId,
     threadId,
     model,
+    reasoningEffort: "",
+    maxOutputTokens: 0,
     maxTurns,
     userQuery: String(userQuery || ""),
     conversationDir: conversationDir || "",
@@ -348,6 +414,21 @@ function createTurnLogFiles({ turnId, threadId, conversationDir, model, maxTurns
     turnsUsed: null,
     finalAnswer: "",
     error: "",
+    inputTokens: 0,
+    cachedTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 0,
+    toolCallsCount: 0,
+    grepHitsInjected: 0,
+    grepCharsInjected: 0,
+    compactionEnabled: true,
+    compactionTriggered: false,
+    stoppedByMaxTurns: false,
+    finalizerUsed: false,
+    estimatedCostUsd: 0,
+    pricingModelKey: "",
+    pricingSource: "",
     cliCommands: [],
     reasoningTrace: [],
   };
@@ -362,12 +443,32 @@ function createTurnLogFiles({ turnId, threadId, conversationDir, model, maxTurns
     const lines = [];
     lines.push(`# Agent Turn Log`);
     lines.push("");
+    lines.push(`- Query ID: ${data.queryId}`);
+    lines.push(`- Run ID: ${data.runId || "(unknown)"}`);
+    if (typeof data.turnIndex === "number") lines.push(`- Turn Index: ${data.turnIndex}`);
     lines.push(`- Turn ID: ${data.turnId}`);
     lines.push(`- Thread ID: ${data.threadId}`);
     lines.push(`- Model: ${data.model}`);
+    if (data.reasoningEffort) lines.push(`- Reasoning Effort: ${data.reasoningEffort}`);
+    lines.push(`- Max Output Tokens: ${data.maxOutputTokens}`);
     lines.push(`- Max Turns: ${data.maxTurns}`);
     if (typeof data.turnsUsed === "number") lines.push(`- Turns Used: ${data.turnsUsed}`);
     lines.push(`- Status: ${data.status}`);
+    lines.push(`- Input Tokens: ${data.inputTokens}`);
+    lines.push(`- Cached Tokens: ${data.cachedTokens}`);
+    lines.push(`- Output Tokens: ${data.outputTokens}`);
+    lines.push(`- Reasoning Tokens: ${data.reasoningTokens}`);
+    lines.push(`- Total Tokens: ${data.totalTokens}`);
+    lines.push(`- Tool Calls Count: ${data.toolCallsCount}`);
+    lines.push(`- Grep Hits Injected: ${data.grepHitsInjected}`);
+    lines.push(`- Grep Chars Injected: ${data.grepCharsInjected}`);
+    lines.push(`- Compaction Enabled: ${data.compactionEnabled}`);
+    lines.push(`- Compaction Triggered: ${data.compactionTriggered}`);
+    lines.push(`- Stopped By Max Turns: ${data.stoppedByMaxTurns}`);
+    lines.push(`- Finalizer Used: ${data.finalizerUsed}`);
+    lines.push(`- Estimated Cost USD: ${data.estimatedCostUsd}`);
+    if (data.pricingModelKey) lines.push(`- Pricing Model Key: ${data.pricingModelKey}`);
+    if (data.pricingSource) lines.push(`- Pricing Source: ${data.pricingSource}`);
     lines.push(`- Started At: ${data.startedAt}`);
     if (data.finishedAt) lines.push(`- Finished At: ${data.finishedAt}`);
     if (data.conversationDir) lines.push(`- Conversation Dir: ${data.conversationDir}`);
@@ -439,15 +540,77 @@ function createTurnLogFiles({ turnId, threadId, conversationDir, model, maxTurns
       if (data.reasoningTrace.length > 2000) data.reasoningTrace = data.reasoningTrace.slice(-2000);
       save();
     },
+    setRunInfo(entry) {
+      if (!entry || typeof entry !== "object") return;
+      if (typeof entry.runId === "string" && entry.runId) data.runId = entry.runId;
+      if (typeof entry.reasoningEffort === "string" && entry.reasoningEffort) data.reasoningEffort = entry.reasoningEffort;
+      if (Number.isFinite(Number(entry.maxOutputTokens))) data.maxOutputTokens = Number(entry.maxOutputTokens);
+      save();
+    },
+    recordUsage(entry) {
+      if (!entry || typeof entry !== "object") return;
+      if (Number.isFinite(Number(entry.inputTokens))) data.inputTokens = Number(entry.inputTokens);
+      if (Number.isFinite(Number(entry.cachedTokens))) data.cachedTokens = Number(entry.cachedTokens);
+      if (Number.isFinite(Number(entry.outputTokens))) data.outputTokens = Number(entry.outputTokens);
+      if (Number.isFinite(Number(entry.reasoningTokens))) data.reasoningTokens = Number(entry.reasoningTokens);
+      if (Number.isFinite(Number(entry.totalTokens))) data.totalTokens = Number(entry.totalTokens);
+      save();
+    },
+    recordToolCall(entry) {
+      data.toolCallsCount += 1;
+      if (entry && typeof entry === "object") {
+        if (Number.isFinite(Number(entry.grepHitsInjected))) data.grepHitsInjected += Number(entry.grepHitsInjected);
+        if (Number.isFinite(Number(entry.grepCharsInjected))) data.grepCharsInjected += Number(entry.grepCharsInjected);
+      }
+      save();
+    },
+    markCompactionTriggered() {
+      data.compactionTriggered = true;
+      save();
+    },
     finalize({ status, turnsUsed, finalAnswer, error }) {
       data.status = status || data.status;
       data.finishedAt = toIsoNow();
       if (typeof turnsUsed === "number" && Number.isFinite(turnsUsed)) data.turnsUsed = turnsUsed;
       data.finalAnswer = typeof finalAnswer === "string" ? finalAnswer : data.finalAnswer;
       data.error = typeof error === "string" ? error : "";
+      data.stoppedByMaxTurns = Boolean(
+        (typeof data.error === "string" && /max[_\s-]*turns?/i.test(data.error)) ||
+        (typeof data.turnsUsed === "number" && typeof data.maxTurns === "number" && data.turnsUsed >= data.maxTurns)
+      );
+      if (!data.totalTokens) {
+        data.totalTokens = (data.inputTokens || 0) + (data.outputTokens || 0) + (data.reasoningTokens || 0);
+      }
+      // Fallback estimation when usage is unavailable from provider events.
+      // Heuristic: ~4 chars/token for mixed English/Korean short text.
+      const hasUsage = (data.inputTokens + data.outputTokens + data.reasoningTokens) > 0;
+      if (!hasUsage) {
+        const queryChars = String(data.userQuery || "").length;
+        const answerChars = String(data.finalAnswer || "").length;
+        const reasoningChars = Array.isArray(data.reasoningTrace)
+          ? data.reasoningTrace.reduce((sum, ev) => sum + String((ev && (ev.text || ev.delta)) || "").length, 0)
+          : 0;
+        const approxInput = Math.ceil((queryChars + Number(data.grepCharsInjected || 0)) / 4);
+        const approxReasoning = Math.ceil(reasoningChars / 4);
+        const approxOutput = Math.ceil(answerChars / 4);
+        data.inputTokens = Math.max(data.inputTokens, approxInput);
+        data.reasoningTokens = Math.max(data.reasoningTokens, approxReasoning);
+        data.outputTokens = Math.max(data.outputTokens, approxOutput);
+        data.totalTokens = data.inputTokens + data.outputTokens + data.reasoningTokens;
+      }
+      const pricing = estimateCostUsd({
+        model: data.model,
+        inputTokens: data.inputTokens,
+        cachedTokens: data.cachedTokens,
+        outputTokens: data.outputTokens,
+      });
+      data.estimatedCostUsd = pricing.estimatedCostUsd;
+      data.pricingModelKey = pricing.pricingModelKey;
+      data.pricingSource = pricing.pricingSource;
       save();
       try {
         upsertChatLogTurn(data);
+        save();
       } catch {
         // ignore chat-level logging failures
       }
@@ -494,6 +657,9 @@ function upsertChatLogTurn(turnData) {
     const tb = Date.parse(b && b.startedAt ? b.startedAt : "") || 0;
     return ta - tb;
   });
+  for (let i = 0; i < current.turns.length; i += 1) {
+    current.turns[i].turnIndex = i + 1;
+  }
 
   fs.writeFileSync(jsonPath, JSON.stringify(current, null, 2), "utf8");
 
@@ -510,10 +676,30 @@ function upsertChatLogTurn(turnData) {
   for (const turn of current.turns) {
     lines.push(`## Turn ${turn.turnId}`);
     lines.push("");
+    lines.push(`- Query ID: ${turn.queryId || turn.turnId || ""}`);
+    lines.push(`- Run ID: ${turn.runId || "(unknown)"}`);
+    if (typeof turn.turnIndex === "number") lines.push(`- Turn Index: ${turn.turnIndex}`);
     lines.push(`- Status: ${turn.status || ""}`);
     lines.push(`- Model: ${turn.model || ""}`);
+    if (turn.reasoningEffort) lines.push(`- Reasoning Effort: ${turn.reasoningEffort}`);
+    lines.push(`- Max Output Tokens: ${Number.isFinite(Number(turn.maxOutputTokens)) ? Number(turn.maxOutputTokens) : 0}`);
     if (typeof turn.maxTurns === "number") lines.push(`- Max Turns: ${turn.maxTurns}`);
     if (typeof turn.turnsUsed === "number") lines.push(`- Turns Used: ${turn.turnsUsed}`);
+    lines.push(`- Input Tokens: ${Number.isFinite(Number(turn.inputTokens)) ? Number(turn.inputTokens) : 0}`);
+    lines.push(`- Cached Tokens: ${Number.isFinite(Number(turn.cachedTokens)) ? Number(turn.cachedTokens) : 0}`);
+    lines.push(`- Output Tokens: ${Number.isFinite(Number(turn.outputTokens)) ? Number(turn.outputTokens) : 0}`);
+    lines.push(`- Reasoning Tokens: ${Number.isFinite(Number(turn.reasoningTokens)) ? Number(turn.reasoningTokens) : 0}`);
+    lines.push(`- Total Tokens: ${Number.isFinite(Number(turn.totalTokens)) ? Number(turn.totalTokens) : 0}`);
+    lines.push(`- Tool Calls Count: ${Number.isFinite(Number(turn.toolCallsCount)) ? Number(turn.toolCallsCount) : 0}`);
+    lines.push(`- Grep Hits Injected: ${Number.isFinite(Number(turn.grepHitsInjected)) ? Number(turn.grepHitsInjected) : 0}`);
+    lines.push(`- Grep Chars Injected: ${Number.isFinite(Number(turn.grepCharsInjected)) ? Number(turn.grepCharsInjected) : 0}`);
+    lines.push(`- Compaction Enabled: ${turn.compactionEnabled !== false}`);
+    lines.push(`- Compaction Triggered: ${Boolean(turn.compactionTriggered)}`);
+    lines.push(`- Stopped By Max Turns: ${Boolean(turn.stoppedByMaxTurns)}`);
+    lines.push(`- Finalizer Used: ${Boolean(turn.finalizerUsed)}`);
+    lines.push(`- Estimated Cost USD: ${Number.isFinite(Number(turn.estimatedCostUsd)) ? Number(turn.estimatedCostUsd) : 0}`);
+    if (turn.pricingModelKey) lines.push(`- Pricing Model Key: ${turn.pricingModelKey}`);
+    if (turn.pricingSource) lines.push(`- Pricing Source: ${turn.pricingSource}`);
     lines.push(`- Started At: ${turn.startedAt || ""}`);
     if (turn.finishedAt) lines.push(`- Finished At: ${turn.finishedAt}`);
     lines.push("");
@@ -915,6 +1101,7 @@ class AgentsClient {
         },
       },
       execute: async (input) => {
+        if (turnLog) turnLog.recordToolCall();
         const parsed = listFilesInput.safeParse(input);
         if (!parsed.success) {
           return { ok: false, error: "Invalid input. Expected { contains?: string, limit?: number }" };
@@ -1049,6 +1236,15 @@ class AgentsClient {
           }
         }
 
+        const grepHitsInjected = hits.length;
+        const grepCharsInjected = hits.reduce((sum, h) => sum + String(h && h.text ? h.text : "").length, 0);
+        if (turnLog) {
+          turnLog.recordToolCall({
+            grepHitsInjected,
+            grepCharsInjected,
+          });
+        }
+
         return {
           ok: true,
           root,
@@ -1077,6 +1273,7 @@ class AgentsClient {
         },
       },
       execute: async (input) => {
+        if (turnLog) turnLog.recordToolCall();
         const parsed = readFileInput.safeParse(input);
         if (!parsed.success) {
           return { ok: false, error: "Invalid input. Expected { relativePath: string, ... }" };
@@ -1193,6 +1390,10 @@ class AgentsClient {
       maxTurns,
       userQuery: text,
     });
+    turnLog.setRunInfo({
+      reasoningEffort: this.getReasoningEffort(),
+      maxOutputTokens: Number(process.env.MAX_OUTPUT_TOKENS || 0),
+    });
     const agent = this.buildAgent({ model, threadId, turnLog });
 
     const abortController = new AbortController();
@@ -1288,6 +1489,7 @@ class AgentsClient {
             : "";
           const responseId = extractResponseIdFromRawEvent(underlyingType ? raw.event : raw);
           if (responseId) responseIds.add(responseId);
+          if (responseId) turnLog.setRunInfo({ runId: responseId });
 
           // Map Responses streaming "reasoning summary" events onto the Codex App Server-style
           // event names that `public/index.html` already renders as a temporary assistant message.
@@ -1295,6 +1497,44 @@ class AgentsClient {
           const eventType = underlyingType || rawType;
           let mappedMethod = rawType;
           let mappedParams = raw;
+
+          if (eventType === "response.compaction.done" || eventType === "response.compaction.created") {
+            turnLog.markCompactionTriggered();
+          }
+
+          if (eventType === "response.completed") {
+            const src = underlyingType ? raw.event : raw;
+            const usage = src && src.response && src.response.usage ? src.response.usage
+              : (src && src.usage ? src.usage : null);
+            if (usage && typeof usage === "object") {
+              const inputTokens = Number(usage.input_tokens || usage.inputTokens || 0);
+              const outputTokens = Number(usage.output_tokens || usage.outputTokens || 0);
+              const totalTokens = Number(usage.total_tokens || usage.totalTokens || (inputTokens + outputTokens));
+              const outputDetails = usage.output_tokens_details || usage.outputTokensDetails || {};
+              const reasoningTokens = Number(
+                outputDetails.reasoning_tokens ||
+                outputDetails.reasoningTokens ||
+                usage.reasoning_tokens ||
+                usage.reasoningTokens ||
+                0
+              );
+              const inputDetails = usage.input_tokens_details || usage.inputTokensDetails || {};
+              const cachedTokens = Number(
+                inputDetails.cached_tokens ||
+                inputDetails.cachedTokens ||
+                usage.cached_tokens ||
+                usage.cachedTokens ||
+                0
+              );
+              turnLog.recordUsage({
+                inputTokens,
+                cachedTokens,
+                outputTokens,
+                reasoningTokens,
+                totalTokens,
+              });
+            }
+          }
 
           if (eventType === "response.reasoning_summary_part.added" || eventType === "response.reasoning_summary_part.done") {
             // Prefer part boundaries over per-token deltas for UI updates.
