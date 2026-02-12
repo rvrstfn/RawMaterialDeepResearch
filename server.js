@@ -420,6 +420,7 @@ function createTurnLogFiles({
     maxOutputTokens: 0,
     maxTurns,
     userQuery: String(userQuery || ""),
+    systemPrompt: "",
     conversationDir: conversationDir || "",
     startedAt: toIsoNow(),
     finishedAt: "",
@@ -494,6 +495,10 @@ function createTurnLogFiles({
     lines.push("");
     lines.push(data.userQuery || "(empty)");
     lines.push("");
+    lines.push(`## System Prompt`);
+    lines.push("");
+    lines.push(data.systemPrompt || "(empty)");
+    lines.push("");
     lines.push(`## CLI Commands`);
     lines.push("");
     if (!data.cliCommands.length) {
@@ -562,6 +567,7 @@ function createTurnLogFiles({
       if (typeof entry.runId === "string" && entry.runId) data.runId = entry.runId;
       if (typeof entry.reasoningEffort === "string" && entry.reasoningEffort) data.reasoningEffort = entry.reasoningEffort;
       if (Number.isFinite(Number(entry.maxOutputTokens))) data.maxOutputTokens = Number(entry.maxOutputTokens);
+      if (typeof entry.systemPrompt === "string") data.systemPrompt = entry.systemPrompt;
       save();
     },
     recordUsage(entry) {
@@ -726,6 +732,10 @@ function upsertChatLogTurn(turnData) {
     lines.push(`### User Query`);
     lines.push("");
     lines.push(turn.userQuery || "(empty)");
+    lines.push("");
+    lines.push(`### System Prompt`);
+    lines.push("");
+    lines.push(typeof turn.systemPrompt === "string" && turn.systemPrompt ? turn.systemPrompt : "(empty)");
     lines.push("");
     lines.push(`### CLI Commands`);
     lines.push("");
@@ -1379,24 +1389,10 @@ class AgentsClient {
   }
 
   buildAgent({ model, threadId, turnLog }) {
-    const preamble = this.getThreadPreamble(threadId);
     const reasoningEffort = this.getReasoningEffort();
     const compactionEnabled = this.getCompactionEnabled();
     const compactionThreshold = this.getCompactionThreshold();
-
-    const instructions = [
-      preamble,
-      "",
-      "Operational requirements:",
-      "- You are performing deep research over the provided TXT corpus.",
-      "- Always use the search/read tools to gather evidence before answering.",
-      "- Try multiple query variants (synonyms, Korean/English forms, spacing/hyphen variants).",
-      "- For OCR/PDF artifacts, test fragmented terms and normalized forms.",
-      "- Keep searching iteratively until you are satisfied that recall is strong.",
-      "- In the final answer, list matched materials with short evidence and file references.",
-      "- If evidence is weak, explicitly say what is missing and what additional searches were attempted.",
-      "- Do not invent citations.",
-    ].join("\n");
+    const instructions = this.buildAgentInstructions(threadId);
 
     const modelSettings = {};
     if (!(REASONING_SUMMARY === "off" || REASONING_SUMMARY === "false" || REASONING_SUMMARY === "0")) {
@@ -1420,6 +1416,23 @@ class AgentsClient {
       modelSettings,
       tools: this.createResearchTools(turnLog),
     });
+  }
+
+  buildAgentInstructions(threadId) {
+    const preamble = this.getThreadPreamble(threadId);
+    return [
+      preamble,
+      "",
+      "Operational requirements:",
+      "- You are performing deep research over the provided TXT corpus.",
+      "- Always use the search/read tools to gather evidence before answering.",
+      "- Try multiple query variants (synonyms, Korean/English forms, spacing/hyphen variants).",
+      "- For OCR/PDF artifacts, test fragmented terms and normalized forms.",
+      "- Keep searching iteratively until you are satisfied that recall is strong.",
+      "- In the final answer, list matched materials with short evidence and file references.",
+      "- If evidence is weak, explicitly say what is missing and what additional searches were attempted.",
+      "- Do not invent citations.",
+    ].join("\n");
   }
 
   async readThreadMessages(threadId) {
@@ -1463,9 +1476,11 @@ class AgentsClient {
       compactionEnabled,
       compactionThreshold,
     });
+    const systemPrompt = this.buildAgentInstructions(threadId);
     turnLog.setRunInfo({
       reasoningEffort: this.getReasoningEffort(),
       maxOutputTokens: Number(process.env.MAX_OUTPUT_TOKENS || 0),
+      systemPrompt,
     });
     const agent = this.buildAgent({ model, threadId, turnLog });
 
