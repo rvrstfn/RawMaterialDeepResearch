@@ -52,6 +52,9 @@ TURN_TIMEOUT_MS=600000
 REASONING_SUMMARY=auto
 # REASONING_EFFORT: none | minimal | low | medium | high | xhigh
 REASONING_EFFORT=low
+# Server-side context compaction (Responses API `context_management`)
+CONTEXT_COMPACTION_ENABLED=1
+CONTEXT_COMPACTION_THRESHOLD=160000
 INGREDIENTS_DIR=/mnt/d/Ingredient/PDFs/txt
 SESSION_TTL_MS=2592000000
 ADMIN_USERNAME=admin

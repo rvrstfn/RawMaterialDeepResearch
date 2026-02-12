@@ -52,6 +52,10 @@ const REASONING_SUMMARY = String(process.env.REASONING_SUMMARY || "auto").trim()
 const REASONING_EFFORT_DEFAULT = String(process.env.REASONING_EFFORT || "low").trim().toLowerCase();
 const TURN_TIMEOUT_MS = Number(process.env.TURN_TIMEOUT_MS || 10 * 60 * 1000);
 const MAX_TURNS_DEFAULT = Number(process.env.MAX_TURNS || 25);
+const CONTEXT_COMPACTION_ENABLED_DEFAULT = String(
+  process.env.CONTEXT_COMPACTION_ENABLED == null ? "1" : process.env.CONTEXT_COMPACTION_ENABLED
+).trim().toLowerCase();
+const CONTEXT_COMPACTION_THRESHOLD_DEFAULT = Number(process.env.CONTEXT_COMPACTION_THRESHOLD || 160000);
 const PUBLIC_DIR = path.join(__dirname, "public");
 const CONVERSATIONS_DIR = path.join(__dirname, "conversations");
 const TURN_LOGS_DIR = path.join(__dirname, "logs", "turns");
@@ -385,7 +389,16 @@ function toIsoNow() {
   return new Date().toISOString();
 }
 
-function createTurnLogFiles({ turnId, threadId, conversationDir, model, maxTurns, userQuery }) {
+function createTurnLogFiles({
+  turnId,
+  threadId,
+  conversationDir,
+  model,
+  maxTurns,
+  userQuery,
+  compactionEnabled,
+  compactionThreshold,
+}) {
   ensureDirSync(TURN_LOGS_DIR);
   ensureDirSync(CHAT_LOGS_DIR);
   const stamp = safeNowFolderName();
@@ -422,8 +435,9 @@ function createTurnLogFiles({ turnId, threadId, conversationDir, model, maxTurns
     toolCallsCount: 0,
     grepHitsInjected: 0,
     grepCharsInjected: 0,
-    compactionEnabled: true,
+    compactionEnabled: Boolean(compactionEnabled),
     compactionTriggered: false,
+    compactionThreshold: Number.isFinite(Number(compactionThreshold)) ? Number(compactionThreshold) : 0,
     stoppedByMaxTurns: false,
     finalizerUsed: false,
     estimatedCostUsd: 0,
@@ -464,6 +478,9 @@ function createTurnLogFiles({ turnId, threadId, conversationDir, model, maxTurns
     lines.push(`- Grep Chars Injected: ${data.grepCharsInjected}`);
     lines.push(`- Compaction Enabled: ${data.compactionEnabled}`);
     lines.push(`- Compaction Triggered: ${data.compactionTriggered}`);
+    if (Number.isFinite(Number(data.compactionThreshold)) && Number(data.compactionThreshold) > 0) {
+      lines.push(`- Compaction Threshold: ${Number(data.compactionThreshold)}`);
+    }
     lines.push(`- Stopped By Max Turns: ${data.stoppedByMaxTurns}`);
     lines.push(`- Finalizer Used: ${data.finalizerUsed}`);
     lines.push(`- Estimated Cost USD: ${data.estimatedCostUsd}`);
@@ -695,6 +712,9 @@ function upsertChatLogTurn(turnData) {
     lines.push(`- Grep Chars Injected: ${Number.isFinite(Number(turn.grepCharsInjected)) ? Number(turn.grepCharsInjected) : 0}`);
     lines.push(`- Compaction Enabled: ${turn.compactionEnabled !== false}`);
     lines.push(`- Compaction Triggered: ${Boolean(turn.compactionTriggered)}`);
+    if (Number.isFinite(Number(turn.compactionThreshold)) && Number(turn.compactionThreshold) > 0) {
+      lines.push(`- Compaction Threshold: ${Number(turn.compactionThreshold)}`);
+    }
     lines.push(`- Stopped By Max Turns: ${Boolean(turn.stoppedByMaxTurns)}`);
     lines.push(`- Finalizer Used: ${Boolean(turn.finalizerUsed)}`);
     lines.push(`- Estimated Cost USD: ${Number.isFinite(Number(turn.estimatedCostUsd)) ? Number(turn.estimatedCostUsd) : 0}`);
@@ -841,12 +861,38 @@ class AgentsClient {
     return 25;
   }
 
+  getCompactionEnabled() {
+    const configured = this.appSettings && Object.prototype.hasOwnProperty.call(this.appSettings, "compactionEnabled")
+      ? this.appSettings.compactionEnabled
+      : undefined;
+    if (typeof configured === "boolean") return configured;
+    if (typeof configured === "string") {
+      const v = configured.trim().toLowerCase();
+      return !(v === "0" || v === "false" || v === "off" || v === "no");
+    }
+    return !(CONTEXT_COMPACTION_ENABLED_DEFAULT === "0" ||
+      CONTEXT_COMPACTION_ENABLED_DEFAULT === "false" ||
+      CONTEXT_COMPACTION_ENABLED_DEFAULT === "off" ||
+      CONTEXT_COMPACTION_ENABLED_DEFAULT === "no");
+  }
+
+  getCompactionThreshold() {
+    const configured = this.appSettings ? Number(this.appSettings.compactionThreshold) : NaN;
+    if (Number.isFinite(configured)) return clampNumber(configured, 1024, 1_000_000, 160000);
+    if (Number.isFinite(CONTEXT_COMPACTION_THRESHOLD_DEFAULT)) {
+      return clampNumber(CONTEXT_COMPACTION_THRESHOLD_DEFAULT, 1024, 1_000_000, 160000);
+    }
+    return 160000;
+  }
+
   getAdminSettings() {
     return {
       defaultModel: this.getDefaultModel(),
       defaultThreadPreamble: this.getDefaultThreadPreamble(),
       reasoningEffort: this.getReasoningEffort(),
       maxTurns: this.getMaxTurns(),
+      compactionEnabled: this.getCompactionEnabled(),
+      compactionThreshold: this.getCompactionThreshold(),
       ingredientsRoot: this.ingredientsRoot,
     };
   }
@@ -866,8 +912,21 @@ class AgentsClient {
     const maxTurns = Number.isFinite(Number(next.maxTurns))
       ? clampNumber(Number(next.maxTurns), 1, 100, current.maxTurns)
       : current.maxTurns;
+    const compactionEnabled = Object.prototype.hasOwnProperty.call(next, "compactionEnabled")
+      ? Boolean(next.compactionEnabled)
+      : current.compactionEnabled;
+    const compactionThreshold = Number.isFinite(Number(next.compactionThreshold))
+      ? clampNumber(Number(next.compactionThreshold), 1024, 1_000_000, current.compactionThreshold)
+      : current.compactionThreshold;
 
-    this.appSettings = { defaultModel, defaultThreadPreamble, reasoningEffort, maxTurns };
+    this.appSettings = {
+      defaultModel,
+      defaultThreadPreamble,
+      reasoningEffort,
+      maxTurns,
+      compactionEnabled,
+      compactionThreshold,
+    };
     saveJson(APP_SETTINGS_PATH, this.appSettings);
     return this.getAdminSettings();
   }
@@ -1322,6 +1381,8 @@ class AgentsClient {
   buildAgent({ model, threadId, turnLog }) {
     const preamble = this.getThreadPreamble(threadId);
     const reasoningEffort = this.getReasoningEffort();
+    const compactionEnabled = this.getCompactionEnabled();
+    const compactionThreshold = this.getCompactionThreshold();
 
     const instructions = [
       preamble,
@@ -1337,18 +1398,26 @@ class AgentsClient {
       "- Do not invent citations.",
     ].join("\n");
 
+    const modelSettings = {};
+    if (!(REASONING_SUMMARY === "off" || REASONING_SUMMARY === "false" || REASONING_SUMMARY === "0")) {
+      modelSettings.reasoning = {
+        effort: reasoningEffort,
+        summary: (["auto", "concise", "detailed"].includes(REASONING_SUMMARY) ? REASONING_SUMMARY : "auto"),
+      };
+    }
+    if (compactionEnabled) {
+      modelSettings.providerData = {
+        context_management: [
+          { type: "compaction", compact_threshold: compactionThreshold },
+        ],
+      };
+    }
+
     return new Agent({
       name: "IngredientDeepResearchAgent",
       model: model || this.getDefaultModel(),
       instructions,
-      modelSettings: (REASONING_SUMMARY === "off" || REASONING_SUMMARY === "false" || REASONING_SUMMARY === "0")
-        ? {}
-        : {
-            reasoning: {
-              effort: reasoningEffort,
-              summary: (["auto", "concise", "detailed"].includes(REASONING_SUMMARY) ? REASONING_SUMMARY : "auto"),
-            },
-          },
+      modelSettings,
       tools: this.createResearchTools(turnLog),
     });
   }
@@ -1382,6 +1451,8 @@ class AgentsClient {
     const session = this.getSession(threadId);
     const turnId = `turn_${Date.now()}_${crypto.randomBytes(5).toString("hex")}`;
     const maxTurns = this.getMaxTurns();
+    const compactionEnabled = this.getCompactionEnabled();
+    const compactionThreshold = this.getCompactionThreshold();
     const turnLog = createTurnLogFiles({
       turnId,
       threadId,
@@ -1389,6 +1460,8 @@ class AgentsClient {
       model: model || this.getDefaultModel(),
       maxTurns,
       userQuery: text,
+      compactionEnabled,
+      compactionThreshold,
     });
     turnLog.setRunInfo({
       reasoningEffort: this.getReasoningEffort(),
@@ -1852,6 +1925,12 @@ const server = http.createServer(async (req, res) => {
         defaultThreadPreamble: typeof body.defaultThreadPreamble === "string" ? body.defaultThreadPreamble : undefined,
         reasoningEffort: typeof body.reasoningEffort === "string" ? body.reasoningEffort : undefined,
         maxTurns: Number.isFinite(Number(body.maxTurns)) ? Number(body.maxTurns) : undefined,
+        compactionEnabled: Object.prototype.hasOwnProperty.call(body, "compactionEnabled")
+          ? Boolean(body.compactionEnabled)
+          : undefined,
+        compactionThreshold: Number.isFinite(Number(body.compactionThreshold))
+          ? Number(body.compactionThreshold)
+          : undefined,
       });
       return toJson(res, 200, settings);
     }

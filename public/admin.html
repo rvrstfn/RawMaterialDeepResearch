@@ -68,6 +68,21 @@
       <div class="status" style="align-self:end;">Applied to new turns immediately.</div>
     </div>
 
+    <div class="row">
+      <label>
+        Context Compaction
+        <select id="compactionEnabled">
+          <option value="true">enabled</option>
+          <option value="false">disabled</option>
+        </select>
+      </label>
+      <label>
+        Compaction Threshold (tokens)
+        <input id="compactionThreshold" type="number" min="1024" max="1000000" step="1" value="160000">
+      </label>
+      <div class="status" style="align-self:end;">Uses Responses `context_management` server-side compaction.</div>
+    </div>
+
     <label>
       Default Thread Preamble
       <textarea id="preamble" placeholder="This preamble is auto-applied once for each new thread."></textarea>
@@ -125,6 +140,8 @@
       model: document.getElementById("model"),
       reasoningEffort: document.getElementById("reasoningEffort"),
       maxTurns: document.getElementById("maxTurns"),
+      compactionEnabled: document.getElementById("compactionEnabled"),
+      compactionThreshold: document.getElementById("compactionThreshold"),
       reloadModels: document.getElementById("reloadModels"),
       loadCurrent: document.getElementById("loadCurrent"),
       preamble: document.getElementById("preamble"),
@@ -148,7 +165,9 @@
       defaultModel: "",
       defaultThreadPreamble: "",
       reasoningEffort: "low",
-      maxTurns: 25
+      maxTurns: 25,
+      compactionEnabled: true,
+      compactionThreshold: 160000
     };
 
     function setStatus(text) {
@@ -205,12 +224,16 @@
         defaultModel: typeof data.defaultModel === "string" ? data.defaultModel : "",
         defaultThreadPreamble: typeof data.defaultThreadPreamble === "string" ? data.defaultThreadPreamble : "",
         reasoningEffort: typeof data.reasoningEffort === "string" ? data.reasoningEffort : "low",
-        maxTurns: Number.isFinite(Number(data.maxTurns)) ? Number(data.maxTurns) : 25
+        maxTurns: Number.isFinite(Number(data.maxTurns)) ? Number(data.maxTurns) : 25,
+        compactionEnabled: typeof data.compactionEnabled === "boolean" ? data.compactionEnabled : true,
+        compactionThreshold: Number.isFinite(Number(data.compactionThreshold)) ? Number(data.compactionThreshold) : 160000
       };
       if (loadedSettings.defaultModel) el.model.value = loadedSettings.defaultModel;
       el.preamble.value = loadedSettings.defaultThreadPreamble;
       el.reasoningEffort.value = loadedSettings.reasoningEffort;
       el.maxTurns.value = String(loadedSettings.maxTurns);
+      el.compactionEnabled.value = loadedSettings.compactionEnabled ? "true" : "false";
+      el.compactionThreshold.value = String(loadedSettings.compactionThreshold);
     }
 
     async function refreshAll() {
@@ -234,7 +257,9 @@
             defaultModel: el.model.value.trim(),
             defaultThreadPreamble: el.preamble.value,
             reasoningEffort: el.reasoningEffort.value,
-            maxTurns: Number(el.maxTurns.value)
+            maxTurns: Number(el.maxTurns.value),
+            compactionEnabled: el.compactionEnabled.value === "true",
+            compactionThreshold: Number(el.compactionThreshold.value)
           })
         });
         if (res.status === 401) {
@@ -255,6 +280,8 @@
       el.preamble.value = loadedSettings.defaultThreadPreamble || "";
       el.reasoningEffort.value = loadedSettings.reasoningEffort || "low";
       el.maxTurns.value = String(loadedSettings.maxTurns || 25);
+      el.compactionEnabled.value = loadedSettings.compactionEnabled ? "true" : "false";
+      el.compactionThreshold.value = String(loadedSettings.compactionThreshold || 160000);
       setStatus("Reset");
     }
 
